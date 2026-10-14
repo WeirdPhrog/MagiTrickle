@@ -19,12 +19,17 @@ func (nh *Helper) cleanIPTables(ipt *iptables.IPTables) error {
 		return fmt.Errorf("listing chains error: %w", err)
 	}
 
+	chainsToDelete := make(map[string][]string)
 	for table, chains := range exists {
-		chainListToDelete := make([]string, 0)
 
 		for chain, rules := range chains {
 			if strings.HasPrefix(chain, nh.ChainPrefix) {
-				chainListToDelete = append(chainListToDelete, chain)
+				chainsToDelete[table] = append(chainsToDelete[table], chain)
+				// Flush all owned chains before deleting any: routing tiers
+				// reference other owned chains, in no guaranteed map order.
+				if err := ipt.RegisterChainOverride(table, chain); err != nil {
+					return err
+				}
 				continue
 			}
 
@@ -47,7 +52,12 @@ func (nh *Helper) cleanIPTables(ipt *iptables.IPTables) error {
 			}
 		}
 
-		for _, chain := range chainListToDelete {
+	}
+	if err := ipt.Commit(); err != nil {
+		return fmt.Errorf("failed to unlink iptables chains: %w", err)
+	}
+	for table, chains := range chainsToDelete {
+		for _, chain := range chains {
 			err = ipt.RegisterChainDelete(table, chain)
 			if err != nil {
 				return fmt.Errorf("deleting chain error: %w", err)

@@ -9,8 +9,8 @@
 PKG_NAME := magitrickle
 PKG_DESCRIPTION := DNS-based routing application
 PKG_LICENSE := GPL-3.0-or-later
-PKG_URL := https://magitrickle.dev
-PKG_MAINTAINER := Vladimir Avtsenov <vladimir.lsk.cool@gmail.com>
+PKG_URL := https://github.com/WeirdPhrog/MagiTrickle
+PKG_MAINTAINER := WeirdPhrog (fork); upstream: Vladimir Avtsenov
 
 ifeq ($(strip $(PKG_VERSION)),)
 	TAG := $(shell git describe --tags --abbrev=0 2> /dev/null)
@@ -249,6 +249,10 @@ prepare_files: build
 	$(if $(filter entware,$(PLATFORM)), $(call _copy_files,./files/entware))
 	$(if $(filter entware,$(PLATFORM)), $(if $(filter %_kn,$(TARGET)), $(call _copy_files,./files/entware_kn)))
 	$(if $(filter openwrt,$(PLATFORM)), $(call _copy_files,./files/openwrt))
+ifeq ($(PLATFORM),entware)
+	cp install.sh "$(BIN_DIR)/magitrickle-update"
+	chmod 755 "$(BIN_DIR)/magitrickle-update"
+endif
 
 $(BUILD_KEY_APK_SEC):
 	openssl ecparam -name prime256v1 -genkey -noout -out $(BUILD_KEY_APK_SEC)

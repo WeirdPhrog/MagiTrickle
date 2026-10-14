@@ -44,11 +44,12 @@ func subscriptionAsRuntimeRuleSet(sub *models.Subscription) rulesets.Spec {
 	}
 
 	return rulesets.Spec{
-		ID:         sub.ID,
-		RuntimeKey: runtimeKeyPrefix + sub.ID.String(),
-		Name:       name,
-		Interface:  sub.Interface,
-		Enable:     enable,
-		Rules:      rules,
+		Subscription: true,
+		ID:           sub.ID,
+		RuntimeKey:   runtimeKeyPrefix + sub.ID.String(),
+		Name:         name,
+		Interface:    sub.Interface,
+		Enable:       enable,
+		Rules:        rules,
 	}
 }

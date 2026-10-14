@@ -204,7 +204,7 @@ func (g *RuleSet) enable() error {
 	}
 
 	ipset := g.app.nfHelper.IPSet(g.RuntimeKey())
-	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset)
+	ipsetToLink := g.app.nfHelper.IPSetToLink(g.RuntimeKey(), g.RouteInterface(), ipset, g.spec.Subscription)
 	if err := ipsetToLink.ClearIfDisabled(); err != nil {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}

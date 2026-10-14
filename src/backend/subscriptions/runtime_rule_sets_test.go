@@ -33,6 +33,9 @@ func TestBuildRuntimeRuleSetsUsesSubscriptionIDAndNamespacedRuntimeKey(t *testin
 	}
 
 	group := groups[0]
+	if !group.Subscription {
+		t.Fatal("subscription must use the lower priority routing tier")
+	}
 	if group.ID != subID {
 		t.Fatalf("expected runtime rule set ID %s, got %s", subID.String(), group.ID.String())
 	}

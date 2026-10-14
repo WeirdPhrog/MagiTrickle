@@ -17,6 +17,9 @@ func TestBuildRuntimeRuleSetPreservesModelAndIdentity(t *testing.T) {
 	}
 
 	spec := BuildRuntimeRuleSet(model)
+	if spec.Subscription {
+		t.Fatal("user group must use the higher priority routing tier")
+	}
 
 	if spec.Model != model {
 		t.Fatal("expected model pointer to be preserved")

@@ -22,17 +22,18 @@ type IPSetToLink struct {
 	enabled atomic.Bool
 	locker  sync.Mutex
 
-	chainName string
-	ifaceName string
-	startIdx  uint32
-	ipset     *IPSet
-	nh        *Helper
-	mark      uint32
-	table     int
-	ip4Rule   *netlink.Rule
-	ip6Rule   *netlink.Rule
-	ip4Route  [2]*netlink.Route
-	ip6Route  [2]*netlink.Route
+	chainName    string
+	routingChain string
+	ifaceName    string
+	startIdx     uint32
+	ipset        *IPSet
+	nh           *Helper
+	mark         uint32
+	table        int
+	ip4Rule      *netlink.Rule
+	ip6Rule      *netlink.Rule
+	ip4Route     [2]*netlink.Route
+	ip6Route     [2]*netlink.Route
 }
 
 func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
@@ -89,7 +90,7 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		}
 	}
 
-	err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
+	err = ipt.Append("mangle", r.routingChain, "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
 	}
@@ -149,7 +150,7 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
 	}
 
-	err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+	err = ipt.Delete("mangle", r.routingChain, "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
 	}
@@ -542,12 +543,17 @@ func (r *IPSetToLink) AddrChangeHook(event netlink.AddrUpdate) error {
 	return errors.Join(errs...)
 }
 
-func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet) *IPSetToLink {
+func (nh *Helper) IPSetToLink(name string, ifaceName string, ipset *IPSet, subscription bool) *IPSetToLink {
+	routingChain := nh.ChainPrefix + "GROUPS"
+	if subscription {
+		routingChain = nh.ChainPrefix + "SUBS"
+	}
 	return &IPSetToLink{
-		nh:        nh,
-		chainName: nh.ChainPrefix + name,
-		ifaceName: ifaceName,
-		ipset:     ipset,
-		startIdx:  nh.StartIdx,
+		routingChain: routingChain,
+		nh:           nh,
+		chainName:    nh.ChainPrefix + name,
+		ifaceName:    ifaceName,
+		ipset:        ipset,
+		startIdx:     nh.StartIdx,
 	}
 }

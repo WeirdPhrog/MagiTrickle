@@ -73,6 +73,10 @@ func (a *App) Start(ctx context.Context) (err error) {
 	if err := a.nfHelper.CleanIPTables(); err != nil {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
+	defer func() { _ = a.nfHelper.CleanIPTables() }()
+	if err := a.nfHelper.InitRouting(); err != nil {
+		return err
+	}
 
 	linkUpdateChannel, linkUpdateDone, err := subscribeLinkUpdates()
 	if err != nil {
@@ -127,6 +131,12 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}()
 	}
 
+	// Also release already enabled rule sets if a later one fails at startup.
+	defer func() {
+		for _, group := range a.ruleSetSnapshot() {
+			_ = group.Disable()
+		}
+	}()
 	for _, group := range a.ruleSetSnapshot() {
 		if err := group.Enable(); err != nil {
 			return fmt.Errorf("failed to enable group: %w", err)
@@ -135,12 +145,6 @@ func (a *App) Start(ctx context.Context) (err error) {
 			return fmt.Errorf("failed to sync group: %w", err)
 		}
 	}
-	defer func() {
-		for _, group := range a.ruleSetSnapshot() {
-			_ = group.Disable()
-		}
-	}()
-
 	go a.StartSubscriptionAutoUpdate(newCtx)
 
 	for {

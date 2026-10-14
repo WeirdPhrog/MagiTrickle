@@ -1,152 +1,172 @@
-name: Build and Package OPKG
+name: Build, test and release fork
 
 on:
   push:
-    branches-ignore:
-      - 'refs/tags/*'
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/build.yml'
-  release:
-    types: [published]
+    branches: [develop, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Package platforms (automatic releases build Entware)
+        type: choice
+        options: [entware, all]
+        default: entware
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   prepare:
-    name: Prepare build matrix
     runs-on: ubuntu-latest
     outputs:
-      configs: ${{ steps.collect.outputs.configs }}
+      configs: ${{ steps.meta.outputs.configs }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build config matrix
-        id: collect
+      - uses: actions/checkout@v4
+      - id: meta
+        env:
+          PLATFORMS: ${{ inputs.platforms || 'entware' }}
         run: |
+          echo "version=$(date -u +%Y.%-m.%-d).${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          import json, os
           from pathlib import Path
-
-          configs = sorted(Path("config").glob("*/*.config"))
-
-          if not configs:
-              raise SystemExit("No build configs found")
-
-          matrix = [
-              {
-                  "config": config.as_posix(),
-                  "name": config.stem,
-              }
-              for config in configs
-          ]
-
-          print(f"configs={json.dumps(matrix, separators=(',', ':'))}")
+          pattern = '*/*.config' if os.environ['PLATFORMS'] == 'all' else 'entware/*.config'
+          configs = sorted(Path('config').glob(pattern))
+          assert configs, 'No build configurations'
+          print('configs=' + json.dumps([{'config': str(p), 'name': p.stem, 'platform': p.parent.name} for p in configs]))
           PY
 
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/backend/go.mod
+          cache-dependency-path: src/backend/go.sum
+      - name: Backend tests including firewall regression tests
+        working-directory: src/backend
+        run: |
+          go test -race -tags testing ./...
+          go vet -tags testing ./...
+          test -z "$(gofmt -l .)"
+      - name: Install kernel test and shell lint tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iptables ipset iproute2 iputils-ping shellcheck
+      - name: Real IPv4/IPv6 packet and connection marks (isolated namespaces)
+        working-directory: src/backend
+        run: |
+          go test -c -tags integration -o /tmp/routing.test ./utils/netfilterTools
+          for backend in legacy nft; do
+            sudo update-alternatives --set iptables /usr/sbin/iptables-$backend
+            sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-$backend
+            sudo unshare --net /tmp/routing.test -test.run TestRealRouting -test.v
+          done
+      - name: Installer checks
+        run: |
+          shellcheck -s sh install.sh
+          python3 -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+      - name: Frontend check and build
+        working-directory: src/frontend
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
   build:
-    name: Build packages (${{ matrix.name }})
-    needs: prepare
+    needs: [prepare, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.prepare.outputs.configs) }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node.JS
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Set up Go
-        uses: actions/setup-go@v3
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-
-      - name: Install dependencies
+          go-version-file: src/backend/go.mod
+          cache-dependency-path: src/backend/go.sum
+      - name: Build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fakeroot upx meson ninja-build pkg-config libssl-dev zlib1g-dev libzstd-dev
-
-      - name: Building apk-tools
+          sudo apt-get install -y fakeroot upx-ucl
+      - name: APK tooling (optional OpenWrt builds)
+        if: matrix.platform == 'openwrt'
         run: |
+          sudo apt-get install -y meson ninja-build pkg-config libssl-dev zlib1g-dev libzstd-dev
           git clone --depth 1 --branch v3.0.7 https://github.com/alpinelinux/apk-tools.git /tmp/apk-tools
           cd /tmp/apk-tools
           meson setup build -Dpython=disabled -Dtests=disabled -Ddocs=disabled
           ninja -C build
           sudo ninja -C build install
           sudo ldconfig
-
-      - name: Build and package
+      - name: Build packages
         env:
-          BUILD_KEY_APK_SEC_CONTENT: ${{ secrets.BUILD_KEY_APK_SEC }}
+          PKG_VERSION: ${{ needs.prepare.outputs.version }}
+          PKG_VERSION_DISPLAY: ${{ needs.prepare.outputs.version }} (WeirdPhrog)
+          PKG_REVISION: '1'
         run: |
-          eval export $(make _return_export_dynamic_env);
-          cp "${{ matrix.config }}" .config
-          if [ -n "$BUILD_KEY_APK_SEC_CONTENT" ]; then
-            KEY_FILE=$(mktemp)
-            printf '%s' "$BUILD_KEY_APK_SEC_CONTENT" > "$KEY_FILE"
-            export BUILD_KEY_APK_SEC="$KEY_FILE"
-          fi
+          cp '${{ matrix.config }}' .config
           make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.platform }}-${{ matrix.name }}
+          path: |
+            .build/*.ipk
+            .build/*.apk
+          if-no-files-found: error
+          compression-level: 0
 
-      - name: Collect package files
-        id: package_outputs
+  release:
+    if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+    needs: [prepare, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: release
+      - name: Prepare release metadata
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          mapfile -t packages < <(
-            find .build -maxdepth 1 -type f \( -name "magitrickle_*.ipk" -o -name "magitrickle_*.apk" \) | sort
-          )
+          cp install.sh release/install.sh
+          printf '%s\n' "$VERSION" > release/VERSION
+          cd release
+          sha256sum *.ipk *.sh VERSION > SHA256SUMS
+          if compgen -G '*.apk' >/dev/null; then sha256sum *.apk >> SHA256SUMS; fi
+      - name: Publish only the complete, tested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          cat > /tmp/release-notes <<'EOF'
+          Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
 
-          if [ "${#packages[@]}" -eq 0 ]; then
-            echo "No package files found" >&2
-            exit 1
-          fi
+          Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 
-          if [ "${#packages[@]}" -gt 2 ]; then
-            echo "Expected at most 2 package files, found ${#packages[@]}" >&2
-            exit 1
-          fi
-
-          for i in "${!packages[@]}"; do
-            index=$((i + 1))
-            file="${packages[$i]}"
-            echo "package_${index}_path=${file}" >> "$GITHUB_OUTPUT"
-            echo "package_${index}_name=$(basename "${file}")" >> "$GITHUB_OUTPUT"
-          done
-
-      - name: Upload package artifact 1
-        if: ${{ github.event_name != 'release' && steps.package_outputs.outputs.package_1_path != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package_outputs.outputs.package_1_name }}
-          path: ${{ steps.package_outputs.outputs.package_1_path }}
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload package artifact 2
-        if: ${{ github.event_name != 'release' && steps.package_outputs.outputs.package_2_path != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.package_outputs.outputs.package_2_name }}
-          path: ${{ steps.package_outputs.outputs.package_2_path }}
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload package asset 1 to release
-        if: ${{ github.event_name == 'release' && steps.package_outputs.outputs.package_1_path != '' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.package_outputs.outputs.package_1_path }}
-          token: ${{ secrets.RELEASE_TOKEN }}
-
-      - name: Upload package asset 2 to release
-        if: ${{ github.event_name == 'release' && steps.package_outputs.outputs.package_2_path != '' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.package_outputs.outputs.package_2_path }}
-          token: ${{ secrets.RELEASE_TOKEN }}
+          CI includes unit/race tests, real iptables legacy/nft packet tests in isolated network namespaces, installer tests, frontend checks and router package builds. Actual router/VPN validation remains necessary.
+          EOF
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "MagiTrickle fork $VERSION" --notes-file /tmp/release-notes --draft
+          gh release upload "v$VERSION" release/* --clobber
+          gh release edit "v$VERSION" --draft=false --latest
