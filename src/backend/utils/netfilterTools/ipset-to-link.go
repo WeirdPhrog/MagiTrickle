@@ -36,17 +36,19 @@ type IPSetToLink struct {
 	ip6Route     [2]*netlink.Route
 }
 
+func (r *IPSetToLink) ipsetName(ipt *iptables.IPTables) string {
+	if ipt.Proto() == iptables.ProtocolIPv4 {
+		return r.ipset.ipsetName + "_4"
+	}
+	return r.ipset.ipsetName + "_6"
+}
+
 func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	if ipt == nil {
 		return nil
 	}
 
-	ipsetName := r.ipset.ipsetName
-	if ipt.Proto() == iptables.ProtocolIPv4 {
-		ipsetName += "_4"
-	} else {
-		ipsetName += "_6"
-	}
+	ipsetName := r.ipsetName(ipt)
 
 	/*
 		Filter Forward
@@ -79,10 +81,11 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	markStr := strconv.Itoa(int(r.mark))
+	// The tier checks membership before entering this chain, so MARK and
+	// CONNMARK share one lookup. Fall through to preserve last-match priority.
 	for _, iptablesArgs := range [][]string{
-		{"-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"},
-		{"-m", "set", "--match-set", ipsetName, "dst", "-j", "MARK", "--set-mark", markStr},
-		{"-m", "set", "--match-set", ipsetName, "dst", "-j", "CONNMARK", "--save-mark"}, // Without this rule, routing on Keenetic routers did not work; DO NOT REMOVE!
+		{"-j", "MARK", "--set-mark", markStr},
+		{"-j", "CONNMARK", "--save-mark"}, // Required for Keenetic routing; keep saving on every match.
 	} {
 		err = ipt.Append("mangle", r.chainName, iptablesArgs...)
 		if err != nil {
@@ -90,7 +93,7 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		}
 	}
 
-	err = ipt.Append("mangle", r.routingChain, "-j", r.chainName)
+	err = ipt.Append("mangle", r.routingChain, "-m", "set", "--match-set", ipsetName, "dst", "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
 	}
@@ -150,7 +153,7 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
 	}
 
-	err = ipt.Delete("mangle", r.routingChain, "-j", r.chainName)
+	err = ipt.Delete("mangle", r.routingChain, "-m", "set", "--match-set", r.ipsetName(ipt), "dst", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
 	}

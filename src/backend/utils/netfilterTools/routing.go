@@ -21,6 +21,10 @@ func (nh *Helper) InitRouting() error {
 				return err
 			}
 		}
+		// Reply packets keep their existing marks. Check once for all rule sets.
+		if err := ipt.Append("mangle", routing, "-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"); err != nil {
+			return err
+		}
 		for _, suffix := range []string{"SUBS", "GROUPS"} {
 			if err := ipt.Append("mangle", routing, "-j", nh.ChainPrefix+suffix); err != nil {
 				return err

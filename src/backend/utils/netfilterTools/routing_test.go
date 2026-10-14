@@ -72,7 +72,7 @@ func TestRoutingPriority(t *testing.T) {
 				if mark, connmark := routePacket(t, fake, sets, true, 88); mark != 88 || connmark != 88 {
 					t.Fatal("reply traffic was re-marked")
 				}
-				if got := fake.GetRules("mangle", "MT_ROUTE"); !reflect.DeepEqual(got, [][]string{{"-j", "MT_SUBS"}, {"-j", "MT_GROUPS"}}) {
+				if got := fake.GetRules("mangle", "MT_ROUTE"); !reflect.DeepEqual(got, [][]string{{"-m", "conntrack", "--ctdir", "REPLY", "-j", "RETURN"}, {"-j", "MT_SUBS"}, {"-j", "MT_GROUPS"}}) {
 					t.Fatalf("unexpected tier order: %v", got)
 				}
 				must(t, nh.CleanIPTables())
@@ -90,6 +90,82 @@ func TestRoutingPriority(t *testing.T) {
 	}
 }
 
+func TestRoutingMatchesAndSkips(t *testing.T) {
+	for _, proto := range []iptables.Protocol{iptables.ProtocolIPv4, iptables.ProtocolIPv6} {
+		t.Run(fmt.Sprint(proto), func(t *testing.T) {
+			fake := iptables.NewFakeIPTables(proto)
+			ipt := iptables.NewIPTables(fake)
+			nh := &Helper{ChainPrefix: "MT_", IpsetPrefix: "mt_"}
+			if proto == iptables.ProtocolIPv4 {
+				nh.IPTables4 = ipt
+			} else {
+				nh.IPTables6 = ipt
+			}
+			for table, chain := range map[string]string{"mangle": "PREROUTING", "filter": "FORWARD", "nat": "POSTROUTING"} {
+				must(t, ipt.RegisterChainPatch(table, chain))
+			}
+			must(t, nh.InitRouting())
+			sub1 := nh.IPSetToLink("sub1", "vpn-sub1", nh.IPSet("sub1"), true)
+			sub2 := nh.IPSetToLink("sub2", "vpn-sub2", nh.IPSet("sub2"), true)
+			group1 := nh.IPSetToLink("group1", "vpn-group1", nh.IPSet("group1"), false)
+			group2 := nh.IPSetToLink("group2", Blackhole, nh.IPSet("group2"), false)
+			sub1.mark, sub2.mark, group1.mark, group2.mark = 101, 102, 201, 202
+			// Interleaved installation must still give groups priority. Within
+			// each tier the last matching rule set wins, including blackholes.
+			for _, r := range []*IPSetToLink{group1, sub1, group2, sub2} {
+				must(t, r.insertIPTablesRules(ipt))
+			}
+			rules := []*IPSetToLink{sub1, sub2, group1, group2}
+			check := func(priority []*IPSetToLink) {
+				t.Helper()
+				for mask := 0; mask < 1<<len(rules); mask++ {
+					sets := map[string]bool{}
+					for i, r := range rules {
+						sets[r.ipsetName(ipt)] = mask&(1<<i) != 0
+					}
+					for _, reply := range []bool{false, true} {
+						// Different packet/connection marks expose accidental saves
+						// on nonmatches, even if the packet already has our mark.
+						for _, initial := range [][2]uint32{{0, 0}, {77, 88}, {group1.mark, 99}} {
+							wantMark, wantConnmark := initial[0], initial[1]
+							if !reply {
+								for _, r := range priority {
+									if sets[r.ipsetName(ipt)] {
+										wantMark, wantConnmark = r.mark, r.mark
+									}
+								}
+							}
+							got := traceRouting(t, fake, sets, reply, initial[0], initial[1])
+							if got.mark != wantMark || got.connmark != wantConnmark {
+								t.Fatalf("mask=%d reply=%t initial=%v: marks=%d/%d, want %d/%d", mask, reply, initial, got.mark, got.connmark, wantMark, wantConnmark)
+							}
+							wantLookups := len(rules)
+							if reply {
+								wantLookups = 0
+							}
+							if got.setLookups != wantLookups || got.directionChecks != 1 {
+								t.Fatalf("lookups/direction checks=%d/%d, want %d/1", got.setLookups, got.directionChecks, wantLookups)
+							}
+							for _, r := range rules {
+								if got.visited[r.chainName] != (!reply && sets[r.ipsetName(ipt)]) {
+									t.Fatalf("unexpected visit to rule set %s (reply=%t mask=%d)", r.chainName, reply, mask)
+								}
+							}
+						}
+					}
+				}
+			}
+			check([]*IPSetToLink{sub1, sub2, group1, group2})
+			must(t, group1.deleteIPTablesRules(ipt))
+			must(t, group1.insertIPTablesRules(ipt))
+			check([]*IPSetToLink{sub1, sub2, group2, group1})
+			must(t, sub1.deleteIPTablesRules(ipt))
+			must(t, sub1.insertIPTablesRules(ipt))
+			check([]*IPSetToLink{sub2, sub1, group2, group1})
+		})
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
@@ -97,12 +173,24 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// Interpret only the generated mangle rules, failing on unexpected targets.
 func routePacket(t *testing.T, fake *iptables.FakeIPTables, sets map[string]bool, reply bool, initial uint32) (uint32, uint32) {
+	got := traceRouting(t, fake, sets, reply, initial, initial)
+	return got.mark, got.connmark
+}
+
+type routingTrace struct {
+	mark, connmark              uint32
+	setLookups, directionChecks int
+	visited                     map[string]bool
+}
+
+// Interpret only the generated mangle rules, failing on unexpected targets.
+func traceRouting(t *testing.T, fake *iptables.FakeIPTables, sets map[string]bool, reply bool, mark, connmark uint32) routingTrace {
 	t.Helper()
-	mark, connmark := initial, initial
+	trace := routingTrace{mark: mark, connmark: connmark, visited: map[string]bool{}}
 	var walk func(string)
 	walk = func(chain string) {
+		trace.visited[chain] = true
 		for _, rule := range fake.GetRules("mangle", chain) {
 			arg := func(flag string) string {
 				for i := 0; i+1 < len(rule); i++ {
@@ -112,11 +200,17 @@ func routePacket(t *testing.T, fake *iptables.FakeIPTables, sets map[string]bool
 				}
 				return ""
 			}
-			if arg("--ctdir") == "REPLY" && !reply {
-				continue
+			if arg("--ctdir") == "REPLY" {
+				trace.directionChecks++
+				if !reply {
+					continue
+				}
 			}
-			if set := arg("--match-set"); set != "" && !sets[set] {
-				continue
+			if set := arg("--match-set"); set != "" {
+				trace.setLookups++
+				if !sets[set] {
+					continue
+				}
 			}
 			switch target := arg("-j"); target {
 			case "RETURN":
@@ -124,9 +218,9 @@ func routePacket(t *testing.T, fake *iptables.FakeIPTables, sets map[string]bool
 			case "MARK":
 				value, err := strconv.ParseUint(arg("--set-mark"), 10, 32)
 				must(t, err)
-				mark = uint32(value)
+				trace.mark = uint32(value)
 			case "CONNMARK":
-				connmark = mark
+				trace.connmark = trace.mark
 			default:
 				if !fake.ChainExists("mangle", target) {
 					t.Fatalf("unknown target %q", target)
@@ -136,5 +230,5 @@ func routePacket(t *testing.T, fake *iptables.FakeIPTables, sets map[string]bool
 		}
 	}
 	walk("PREROUTING")
-	return mark, connmark
+	return trace
 }

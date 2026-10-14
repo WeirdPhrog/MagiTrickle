@@ -195,13 +195,9 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cat > /tmp/release-notes <<'EOF'
-          Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
+          Routing now checks each ipset once instead of twice during packet marking, enters only matching rule-set chains, and checks reply direction once before all rule sets. Groups still override Subscriptions; ordering within each tier and per-packet re-evaluation of existing flows are preserved. No connection-route cache was introduced.
 
-          Security fixes: reject cross-origin browser requests to the API, prevent foreign-page framing, bound login/password and JSON input sizes, cap decompressed subscription lists at 16 MiB, and stop pathological regex backtracking with a matching timeout.
-
-          Frontend fixes: validate rules beyond the visible page, preserve the unsaved-change warning for invalid edits, reject malformed IPv4/IPv6 addresses, cancel stale subscription previews, and use the current rule type when importing. Broken or blocked browser storage no longer prevents WebUI startup.
-
-          Updated the Go toolchain to 1.26.9 and patched Go/frontend dependencies. CI now runs govulncheck and npm audit in addition to regression tests. Subscriptions retain the shared download-interface setting and system-route fallback; Groups retain priority over Subscriptions.
+          Regression tests cover every overlap combination of multiple groups/subscriptions, blackholes, foreign packet/connection marks, rule refreshes, and reduced lookup counts. Real IPv4/IPv6 tests on both iptables backends now also change set membership during an open bidirectional UDP flow and verify reply marks. Fewer lookups do not imply a measured throughput gain on a physical router.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 
