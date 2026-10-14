@@ -42,6 +42,9 @@ for (const kind of ["groups", "subscriptions"] as const) {
       await route.fulfill({ json: { status: "ok" } });
     });
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.route("**/subscriptions/settings", (route) =>
+      route.fulfill({ json: { fetchInterface: "" } }),
+    );
     await page.goto("/");
     if (kind === "subscriptions") await page.getByRole("tab", { name: "Subscriptions" }).click();
     const frames = page.locator(".selection-frame");

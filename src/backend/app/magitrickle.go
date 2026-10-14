@@ -41,6 +41,9 @@ type Main interface {
 	AddSubscription(subscription *models.Subscription) error
 	RemoveSubscriptionByID(id intID.ID) (bool, error)
 	SyncSubscriptionByID(id intID.ID, now time.Time, urlOverride string) (result SubscriptionSyncResult, changed bool, err error)
+	SyncSubscriptionByIDContext(ctx context.Context, id intID.ID, now time.Time, urlOverride string) (result SubscriptionSyncResult, changed bool, err error)
+	FetchSubscriptionList(ctx context.Context, url string) (string, error)
+	SetSubscriptionFetchInterface(name string) error
 	SyncDueSubscriptions(now time.Time) (bool, error)
 	ListInterfaces() ([]models.InterfaceInfo, error)
 	DnsOverrider() *netfilterTools.PortRemap

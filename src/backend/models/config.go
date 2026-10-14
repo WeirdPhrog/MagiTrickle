@@ -3,12 +3,13 @@ package models
 import "time"
 
 type AppConfig struct {
-	HTTPWeb           AppConfigHTTPWeb
-	DNSProxy          AppConfigDNSProxy
-	Netfilter         AppConfigNetfilter
-	Link              []string
-	ShowAllInterfaces bool
-	LogLevel          string
+	HTTPWeb                    AppConfigHTTPWeb
+	DNSProxy                   AppConfigDNSProxy
+	Netfilter                  AppConfigNetfilter
+	Link                       []string
+	ShowAllInterfaces          bool
+	LogLevel                   string
+	SubscriptionFetchInterface string
 }
 
 type AppConfigHTTPWeb struct {

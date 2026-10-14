@@ -12,6 +12,7 @@ import (
 	"magitrickle/config"
 	"magitrickle/constant"
 	"magitrickle/models"
+	"magitrickle/subscriptions"
 
 	"github.com/dlclark/regexp2"
 	"go.yaml.in/yaml/v2"
@@ -58,6 +59,11 @@ func (a *App) loadConfig(filename string) error {
 
 	if !strings.HasPrefix(cfg.ConfigVersion, "0.") && !calendarConfigVersion.MatchString(cfg.ConfigVersion) {
 		return ErrConfigUnsupportedVersion
+	}
+	if cfg.App != nil && cfg.App.SubscriptionFetchInterface != nil {
+		if err := subscriptions.ValidateFetchInterface(*cfg.App.SubscriptionFetchInterface); err != nil {
+			return err
+		}
 	}
 	if cfg.Groups != nil {
 		if err := validateGroups(*cfg.Groups); err != nil {
@@ -142,6 +148,7 @@ func (a *App) loadConfig(filename string) error {
 		applyIfSet(&a.config.Link, cfg.App.Link)
 		applyIfSet(&a.config.ShowAllInterfaces, cfg.App.ShowAllInterfaces)
 		applyIfSet(&a.config.LogLevel, cfg.App.LogLevel)
+		applyIfSet(&a.config.SubscriptionFetchInterface, cfg.App.SubscriptionFetchInterface)
 	}
 
 	if cfg.Groups != nil {
@@ -175,6 +182,11 @@ func (a *App) saveConfig(filename string) error {
 	defer a.configFileMu.Unlock()
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
+	return a.saveConfigLocked(filename)
+}
+
+// Caller holds configFileMu and stateMu (read or write).
+func (a *App) saveConfigLocked(filename string) error {
 	if a.configLoadErr != nil {
 		return fmt.Errorf("refusing to overwrite an unreadable config: %w", a.configLoadErr)
 	}
@@ -228,9 +240,10 @@ func (a *App) saveConfig(filename string) error {
 				DisableIPv6:         &a.config.Netfilter.DisableIPv6,
 				StartMarkTableIndex: &a.config.Netfilter.StartMarkTableIndex,
 			},
-			Link:              &a.config.Link,
-			ShowAllInterfaces: &a.config.ShowAllInterfaces,
-			LogLevel:          &a.config.LogLevel,
+			Link:                       &a.config.Link,
+			ShowAllInterfaces:          &a.config.ShowAllInterfaces,
+			LogLevel:                   &a.config.LogLevel,
+			SubscriptionFetchInterface: &a.config.SubscriptionFetchInterface,
 		},
 		Groups:        &groups,
 		Subscriptions: &a.subscriptions,

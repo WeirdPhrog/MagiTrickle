@@ -3,12 +3,13 @@ package config
 import "time"
 
 type App struct {
-	HTTPWeb           *HTTPWeb   `yaml:"httpWeb"`
-	DNSProxy          *DNSProxy  `yaml:"dnsProxy"`
-	Netfilter         *Netfilter `yaml:"netfilter"`
-	Link              *[]string  `yaml:"link"`
-	ShowAllInterfaces *bool      `yaml:"showAllInterfaces"`
-	LogLevel          *string    `yaml:"logLevel"`
+	HTTPWeb                    *HTTPWeb   `yaml:"httpWeb"`
+	DNSProxy                   *DNSProxy  `yaml:"dnsProxy"`
+	Netfilter                  *Netfilter `yaml:"netfilter"`
+	Link                       *[]string  `yaml:"link"`
+	ShowAllInterfaces          *bool      `yaml:"showAllInterfaces"`
+	LogLevel                   *string    `yaml:"logLevel"`
+	SubscriptionFetchInterface *string    `yaml:"subscriptionFetchInterface"`
 }
 
 type HTTPWeb struct {

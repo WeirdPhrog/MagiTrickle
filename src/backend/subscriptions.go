@@ -16,6 +16,31 @@ import (
 
 const subscriptionAutoUpdateTick = time.Minute
 
+func (a *App) FetchSubscriptionList(ctx context.Context, url string) (string, error) {
+	return subscriptions.FetchListWithInterface(ctx, url, a.Config().SubscriptionFetchInterface)
+}
+
+func (a *App) SetSubscriptionFetchInterface(name string) error {
+	return a.setSubscriptionFetchInterface(name, cfgFileLocation)
+}
+
+func (a *App) setSubscriptionFetchInterface(name, filename string) error {
+	if err := subscriptions.ValidateFetchInterface(name); err != nil {
+		return err
+	}
+	a.configFileMu.Lock()
+	defer a.configFileMu.Unlock()
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	previous := a.config.SubscriptionFetchInterface
+	a.config.SubscriptionFetchInterface = name
+	if err := a.saveConfigLocked(filename); err != nil {
+		a.config.SubscriptionFetchInterface = previous
+		return err
+	}
+	return nil
+}
+
 func (a *App) SyncSubscriptionRuleSets() error {
 	a.subscriptionSyncMu.Lock()
 	defer a.subscriptionSyncMu.Unlock()
@@ -107,6 +132,10 @@ func (a *App) StartSubscriptionAutoUpdate(ctx context.Context) {
 }
 
 func (a *App) SyncSubscriptionByID(id intID.ID, now time.Time, urlOverride string) (app.SubscriptionSyncResult, bool, error) {
+	return a.SyncSubscriptionByIDContext(context.Background(), id, now, urlOverride)
+}
+
+func (a *App) SyncSubscriptionByIDContext(ctx context.Context, id intID.ID, now time.Time, urlOverride string) (app.SubscriptionSyncResult, bool, error) {
 	a.subscriptionSyncMu.Lock()
 	defer a.subscriptionSyncMu.Unlock()
 
@@ -127,7 +156,7 @@ func (a *App) SyncSubscriptionByID(id intID.ID, now time.Time, urlOverride strin
 		return app.SubscriptionSyncResult{}, false, app.ErrSubscriptionInvalid
 	}
 
-	list, err := subscriptions.FetchList(fetchURL)
+	list, err := a.FetchSubscriptionList(ctx, fetchURL)
 	if err != nil {
 		return app.SubscriptionSyncResult{}, false, fmt.Errorf("%w: %v", app.ErrSubscriptionFetch, err)
 	}
@@ -216,7 +245,7 @@ func (a *App) syncDueSubscriptions(ctx context.Context, now time.Time) (bool, er
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		list, err := subscriptions.FetchListContext(ctx, item.url)
+		list, err := a.FetchSubscriptionList(ctx, item.url)
 		if err != nil {
 			log.Error().Err(err).Str("subscription", item.id.String()).Msg("failed to fetch subscription")
 			continue

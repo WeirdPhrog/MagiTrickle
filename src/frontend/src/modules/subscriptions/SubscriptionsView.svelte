@@ -6,6 +6,7 @@
   import PageControls from "../../components/layout/PageControls.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
   import { t } from "../../data/locale.svelte";
+  import SubscriptionFetchSettings from "./components/SubscriptionFetchSettings.svelte";
   import SubscriptionPanel from "./components/SubscriptionPanel.svelte";
   import SubscriptionSearch from "./components/SubscriptionSearch.svelte";
   import AddSubscriptionDialog from "./dialogs/AddSubscriptionDialog.svelte";
@@ -88,6 +89,8 @@
       <SubscriptionSearch />
     {/snippet}
   </PageControls>
+
+  <SubscriptionFetchSettings />
 
   {#if store.fetchError}
     <Placeholder variant="error" minHeight="auto" subtitle={t("Check connection or try again")}>

@@ -9,7 +9,12 @@ import type { Interfaces } from "../src/types.ts";
 const API_BASE = "/api/v1";
 
 const INTERFACES: Interfaces = {
-  interfaces: [{ id: "nwg0" }, { id: "longinterf" }, { id: "eth1" }, { id: "wg0", name: "WireGuard Interface" }],
+  interfaces: [
+    { id: "nwg0" },
+    { id: "longinterf" },
+    { id: "eth1" },
+    { id: "wg0", name: "WireGuard Interface" },
+  ],
 };
 
 const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
@@ -102,6 +107,16 @@ app.put(`${API_BASE}/groups`, async (c) => {
 });
 
 app.get(`${API_BASE}/subscriptions`, (c) => c.json({ subscriptions: SUBSCRIPTIONS }));
+
+let subscriptionFetchInterface = "";
+app.get(`${API_BASE}/subscriptions/settings`, (c) =>
+  c.json({ fetchInterface: subscriptionFetchInterface }),
+);
+app.put(`${API_BASE}/subscriptions/settings`, async (c) => {
+  const body = await c.req.json();
+  subscriptionFetchInterface = body.fetchInterface;
+  return c.json({ fetchInterface: subscriptionFetchInterface });
+});
 
 app.put(`${API_BASE}/subscriptions`, async (c) => {
   console.debug("recieved", (await c.req.json())?.subscriptions?.length, "subscriptions");

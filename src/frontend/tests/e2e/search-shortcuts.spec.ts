@@ -7,6 +7,9 @@ for (const tab of ["Groups", "Subscriptions"]) {
       route.fulfill({ json: { groups: [] } }),
     );
     await page.route("**/subscriptions", (route) => route.fulfill({ json: { subscriptions: [] } }));
+    await page.route("**/subscriptions/settings", (route) =>
+      route.fulfill({ json: { fetchInterface: "" } }),
+    );
     await page.route("**/interfaces", (route) => route.fulfill({ json: { interfaces: [] } }));
     await page.goto("/");
     await page.getByRole("tab", { name: tab, exact: true }).click();

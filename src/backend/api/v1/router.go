@@ -86,6 +86,8 @@ func NewRouter(a app.Main) chi.Router {
 		r.Put("/", h.PutSubscriptions)
 		r.Post("/", h.CreateSubscription)
 		r.Get("/rules", h.GetSubscriptionRules)
+		r.Get("/settings", h.GetSubscriptionSettings)
+		r.Put("/settings", h.PutSubscriptionSettings)
 		r.Route("/{subscriptionID}", func(r chi.Router) {
 			r.Post("/sync", h.SyncSubscription)
 			r.Delete("/", h.DeleteSubscription)

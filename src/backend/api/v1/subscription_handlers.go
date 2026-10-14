@@ -190,7 +190,7 @@ func (h *Handler) SyncSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, changed, err := h.app.SyncSubscriptionByID(id, time.Now(), req.URL)
+	target, changed, err := h.app.SyncSubscriptionByIDContext(r.Context(), id, time.Now(), req.URL)
 	if err != nil {
 		switch {
 		case errors.Is(err, app.ErrSubscriptionNotFound):
@@ -279,7 +279,7 @@ func (h *Handler) GetSubscriptionRules(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "subscription url is required")
 		return
 	}
-	list, err := subscriptions.FetchList(url)
+	list, err := h.app.FetchSubscriptionList(r.Context(), url)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadGateway, err.Error())
 		return

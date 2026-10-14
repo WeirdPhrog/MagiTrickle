@@ -26,14 +26,26 @@ async function setupSubscriptions(page: Page, data: Subscription[]) {
   let subscriptions = structuredClone(data);
   let savedBody: { subscriptions: Subscription[] } | null = null;
   let syncBody: { url?: string } | null = null;
+  let fetchInterface = "";
+  let failSettingsSave = false;
 
   await page.route("**/auth", async (route) => route.fulfill({ json: { enabled: false } }));
   await page.route("**/groups?with_rules=true", async (route) =>
     route.fulfill({ json: { groups: [] } }),
   );
   await page.route("**/interfaces", async (route) =>
-    route.fulfill({ json: { interfaces: ["eth0", "wlan0"] } }),
+    route.fulfill({ json: { interfaces: [{ id: "eth0" }, { id: "wg0", name: "My VPN" }] } }),
   );
+  await page.route("**/subscriptions/settings", async (route) => {
+    if (route.request().method() === "PUT") {
+      if (failSettingsSave) {
+        await route.fulfill({ status: 500, json: { error: "disk full" } });
+        return;
+      }
+      fetchInterface = route.request().postDataJSON().fetchInterface;
+    }
+    await route.fulfill({ json: { fetchInterface } });
+  });
   await page.route("**/subscriptions", async (route) => {
     if (route.request().method() === "PUT") {
       savedBody = route.request().postDataJSON();
@@ -79,10 +91,76 @@ async function setupSubscriptions(page: Page, data: Subscription[]) {
     get syncBody() {
       return syncBody;
     },
+    get fetchInterface() {
+      return fetchInterface;
+    },
+    set failSettingsSave(value: boolean) {
+      failSettingsSave = value;
+    },
   };
 }
 
 test.describe("Subscriptions", () => {
+  test("saves one shared download interface immediately, restores it and resets to default", async ({
+    page,
+  }) => {
+    const state = await setupSubscriptions(page, [
+      makeSubscription("a1b2c3d4", "https://one.example/list.txt"),
+      makeSubscription("b1c2d3e4", "https://two.example/list.txt"),
+    ]);
+    const select = page.getByRole("combobox", { name: "Download interface" });
+    await expect(select).toHaveCount(1);
+    await expect(select).toContainText("System default");
+    await select.click();
+    await page.getByRole("option", { name: "wg0 My VPN" }).click();
+    await expect.poll(() => state.fetchInterface).toBe("wg0");
+    await expect(select).toBeEnabled();
+    await expect(page.locator("#save-subscriptions")).toHaveClass(/inactive/);
+    await expect(page.locator(".subscription-interface")).toHaveText(["eth0", "eth0"]);
+
+    await page.reload();
+    await page.getByRole("tab", { name: "Subscriptions" }).click();
+    await expect(select).toContainText("wg0");
+    await select.click();
+    await page.getByRole("option", { name: "System default", exact: true }).click();
+    await expect.poll(() => state.fetchInterface).toBe("");
+    await expect(select).toContainText("System default");
+  });
+
+  test("rolls back the selector when saving fails, including on an empty page", async ({
+    page,
+  }) => {
+    const state = await setupSubscriptions(page, []);
+    state.failSettingsSave = true;
+    const select = page.getByRole("combobox", { name: "Download interface" });
+    await expect(select).toBeEnabled();
+    await select.click();
+    await page.getByRole("option", { name: "wg0 My VPN" }).click();
+    await expect(page.getByText("Request failed: disk full")).toBeVisible();
+    await expect(select).toContainText("System default");
+    expect(state.fetchInterface).toBe("");
+  });
+
+  test("retains an unavailable interface and offers retry when settings cannot load", async ({
+    page,
+  }) => {
+    await setupSubscriptions(page, []);
+    let failLoad = true;
+    await page.route("**/subscriptions/settings", (route) =>
+      failLoad
+        ? route.fulfill({ status: 503, json: { error: "unavailable" } })
+        : route.fulfill({ json: { fetchInterface: "offline-vpn" } }),
+    );
+    await page.reload();
+    await page.getByRole("tab", { name: "Subscriptions" }).click();
+    const select = page.getByRole("combobox", { name: "Download interface" });
+    await expect(select).toBeDisabled();
+    failLoad = false;
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(select).toContainText("offline-vpn");
+    await expect(select).toBeEnabled();
+  });
+
   test("edits an existing subscription URL and saves it", async ({ page }) => {
     const state = await setupSubscriptions(page, [
       makeSubscription("a1b2c3d4", "https://old.example/list.txt"),

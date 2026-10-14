@@ -17,6 +17,12 @@ func FetchList(rawURL string) (string, error) {
 }
 
 func FetchListContext(ctx context.Context, rawURL string) (string, error) {
+	return FetchListWithInterface(ctx, rawURL, "")
+}
+
+// FetchListWithInterface retries the original URL via the system route if the
+// preferred interface fails. A failed attempt never returns a partial list.
+func FetchListWithInterface(ctx context.Context, rawURL, interfaceName string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid url")
@@ -24,9 +30,26 @@ func FetchListContext(ctx context.Context, rawURL string) (string, error) {
 	if !isSupportedFetchURL(parsed) {
 		return "", fmt.Errorf("unsupported url scheme")
 	}
+	if err := ValidateFetchInterface(interfaceName); err != nil {
+		return "", err
+	}
+	return fetchWithFallback(ctx, interfaceName, func(ctx context.Context, name string) (string, error) {
+		return fetchListAttempt(ctx, rawURL, name)
+	})
+}
+
+func fetchListAttempt(ctx context.Context, rawURL, interfaceName string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	transport, err := fetchTransport(interfaceName)
+	if err != nil {
+		return "", err
+	}
+	defer transport.CloseIdleConnections()
+	parsed, _ := url.Parse(rawURL) // Validated before either attempt.
 
 	client := &http.Client{
-		Timeout: fetchTimeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

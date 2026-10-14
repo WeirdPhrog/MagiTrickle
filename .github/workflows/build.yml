@@ -71,6 +71,11 @@ jobs:
             sudo unshare --net /tmp/routing.test -test.run TestRealRouting -test.v
             sudo unshare --net /tmp/ruleset.test -test.run TestRealRuleSetSync -test.v
           done
+      - name: Subscription downloads over preferred interface and fallback (isolated namespaces)
+        working-directory: src/backend
+        run: |
+          go test -c -tags integration -o /tmp/subscriptions.test ./subscriptions
+          sudo unshare --net /tmp/subscriptions.test -test.run '^TestRealSubscriptionFetch$' -test.v
       - name: Installer checks
         if: ${{ !cancelled() }}
         run: |
@@ -185,7 +190,7 @@ jobs:
           cat > /tmp/release-notes <<'EOF'
           Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
 
-          The audit fixes config reloads after calendar-version releases, atomic saving, group/regex edits, DNS/ipset synchronization and shutdown races. Existing calendar-version configs are recovered automatically. Installer failure handling preserves the previous config.
+          Subscriptions now have one shared download-interface setting, saved immediately from the Subscriptions page. Preview, manual sync and scheduled updates try that interface first, then retry via the system route on failure. Existing rules survive failed downloads. Remote DNS follows the interface; router-local DNS proxies retain their configured upstream routing.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 

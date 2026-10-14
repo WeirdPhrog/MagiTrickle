@@ -1,4 +1,8 @@
 {
+  "Download interface": "Интерфейс загрузки",
+  "System default": "Системный маршрут",
+  "Retry": "Повторить",
+  "For all subscriptions. Saves automatically. If unavailable, retries via the system default route.": "Для всех подписок. Сохраняется автоматически. При недоступности — повторная попытка через системный маршрут.",
   "Save Changes": "Сохранить изменения",
   "Export Config": "Экспортировать конфиг",
   "Empty config exported": "Экспортирован пустой конфиг",
