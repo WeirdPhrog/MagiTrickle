@@ -309,30 +309,14 @@ func (r *IPSetToLink) updateIfaceRoute(iface netlink.Link, family int, current *
 		}
 	}
 
-	deleted := false
-	if current != nil {
-		if route.Gw != nil && route.Gw.Equal(current.Gw) {
-			return current, nil
-		}
-		if route.Gw != nil {
-			if err := netlink.RouteDel(current); err != nil && !errors.Is(err, unix.ESRCH) {
-				return current, fmt.Errorf("error deleting iface route: %w", err)
-			}
-			deleted = true
-		}
-	}
-
-	if err := netlink.RouteAdd(route); err != nil {
+	// An unchanged gateway does not imply the route still exists: link/address
+	// changes can remove it, and a recreated interface gets a new index.
+	if err := netlink.RouteReplace(route); err != nil {
 		if errors.Is(err, unix.ENODEV) {
 			log.Warn().Str("iface", r.ifaceName).Int("family", family).Msg("interface not ready for this IP family, skipping route")
-			if deleted {
-				return nil, nil
-			}
 			return current, nil
 		}
-		if !errors.Is(err, unix.EEXIST) {
-			return nil, fmt.Errorf("error adding iface route: %w", err)
-		}
+		return current, fmt.Errorf("error replacing iface route: %w", err)
 	}
 	return route, nil
 }

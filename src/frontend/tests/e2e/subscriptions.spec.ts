@@ -34,7 +34,9 @@ async function setupSubscriptions(page: Page, data: Subscription[]) {
     route.fulfill({ json: { groups: [] } }),
   );
   await page.route("**/interfaces", async (route) =>
-    route.fulfill({ json: { interfaces: [{ id: "eth0" }, { id: "wg0", name: "My VPN" }] } }),
+    route.fulfill({
+      json: { interfaces: [{ id: "blackhole" }, { id: "eth0" }, { id: "wg0", name: "My VPN" }] },
+    }),
   );
   await page.route("**/subscriptions/settings", async (route) => {
     if (route.request().method() === "PUT") {
@@ -112,6 +114,7 @@ test.describe("Subscriptions", () => {
     await expect(select).toHaveCount(1);
     await expect(select).toContainText("System default");
     await select.click();
+    await expect(page.getByRole("option", { name: "blackhole", exact: true })).toHaveCount(0);
     await page.getByRole("option", { name: "wg0 My VPN" }).click();
     await expect.poll(() => state.fetchInterface).toBe("wg0");
     await expect(select).toBeEnabled();

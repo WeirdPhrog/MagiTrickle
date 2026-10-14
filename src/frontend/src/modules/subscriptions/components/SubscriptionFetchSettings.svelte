@@ -16,7 +16,9 @@
   let loadFailed = $state(false);
   let options = $derived([
     { value: "", label: t("System default") },
-    ...interfaces.list.map((item) => ({ value: item.id, label: item.id, description: item.name })),
+    ...interfaces.list
+      .filter((item) => item.id !== "blackhole")
+      .map((item) => ({ value: item.id, label: item.id, description: item.name })),
   ]);
 
   async function load() {

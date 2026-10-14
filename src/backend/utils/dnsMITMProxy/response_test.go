@@ -1,0 +1,180 @@
+package dnsMITMProxy
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"io"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/miekg/dns"
+)
+
+func TestReusedUDPSocketIgnoresUnrelatedResponses(t *testing.T) {
+	server, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer func() { server.Close(); <-done }()
+	go func() {
+		defer close(done)
+		buf := make([]byte, dns.MaxMsgSize)
+		var previous []byte
+		var firstClient string
+		for i := 0; i < 2; i++ {
+			server.SetReadDeadline(time.Now().Add(2 * time.Second))
+			n, client, err := server.ReadFrom(buf)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if i == 0 {
+				firstClient = client.String()
+			} else if client.String() != firstClient {
+				t.Error("UDP socket was not reused")
+			}
+			var query dns.Msg
+			if err := query.Unpack(buf[:n]); err != nil {
+				t.Error(err)
+				return
+			}
+			if i == 1 {
+				// A duplicate old reply, a short packet, and an echoed query.
+				for _, invalid := range [][]byte{previous, {0, 1}, buf[:n]} {
+					if _, err := server.WriteTo(invalid, client); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+			}
+			reply := new(dns.Msg).SetReply(&query)
+			previous, err = reply.Pack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if _, err := server.WriteTo(previous, client); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	proxy := NewDNSMITMProxy(server.LocalAddr().String(), 1, 1, time.Second)
+	defer proxy.Close()
+	hooks := 0
+	proxy.ResponseHook = func(_ net.Addr, query, reply dns.Msg, _ string) (*dns.Msg, error) {
+		hooks++
+		if query.Id != reply.Id || query.Question[0] != reply.Question[0] {
+			t.Error("an unrelated response reached the routing hook")
+		}
+		return nil, nil
+	}
+	for _, id := range []uint16{123, 456} {
+		query := new(dns.Msg).SetQuestion("example.com.", dns.TypeA)
+		query.Id = id
+		data, _ := query.Pack()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		response, err := proxy.processReq(ctx, nil, data, "udp")
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reply dns.Msg
+		if err := reply.Unpack(response); err != nil || reply.Id != id {
+			t.Fatalf("wrong response: id=%d, error=%v", reply.Id, err)
+		}
+	}
+	if hooks != 2 {
+		t.Fatalf("response hook called %d times, want 2", hooks)
+	}
+}
+
+func TestTCPUnexpectedIDDiscardsConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	listener.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	closed := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			closed <- err
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		prefix := make([]byte, 2)
+		if _, err := io.ReadFull(conn, prefix); err != nil {
+			closed <- err
+			return
+		}
+		data := make([]byte, binary.BigEndian.Uint16(prefix))
+		if _, err := io.ReadFull(conn, data); err != nil {
+			closed <- err
+			return
+		}
+		var query dns.Msg
+		if err := query.Unpack(data); err != nil {
+			closed <- err
+			return
+		}
+		reply := new(dns.Msg).SetReply(&query)
+		reply.Id++
+		data, _ = reply.Pack()
+		binary.BigEndian.PutUint16(prefix, uint16(len(data)))
+		if _, err := conn.Write(append(prefix, data...)); err != nil {
+			closed <- err
+			return
+		}
+		_, err = conn.Read(prefix)
+		closed <- err
+	}()
+	proxy := NewDNSMITMProxy(listener.Addr().String(), 1, 1, time.Second)
+	defer proxy.Close()
+	query, _ := new(dns.Msg).SetQuestion("example.com.", dns.TypeA).Pack()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if response, err := proxy.requestUpstreamDNS(ctx, query, "tcp"); err == nil || response != nil || !strings.Contains(err.Error(), "unexpected DNS response") {
+		t.Fatalf("expected rejection of the response ID, got %v: %v", response, err)
+	}
+	if err := <-closed; err != io.EOF {
+		t.Fatalf("invalid connection was not closed: %v", err)
+	}
+	if len(proxy.tcpConnPool.pool) != 0 {
+		t.Fatal("invalid connection was returned to the pool")
+	}
+}
+
+func TestUnexpectedUDPResponseStillTimesOut(t *testing.T) {
+	server, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer func() { server.Close(); <-done }()
+	go func() {
+		defer close(done)
+		buf := make([]byte, dns.MaxMsgSize)
+		server.SetReadDeadline(time.Now().Add(time.Second))
+		_, client, err := server.ReadFrom(buf)
+		if err == nil {
+			server.WriteTo([]byte{0, 1}, client)
+		}
+	}()
+	proxy := NewDNSMITMProxy(server.LocalAddr().String(), 1, 1, 50*time.Millisecond)
+	defer proxy.Close()
+	query, _ := new(dns.Msg).SetQuestion("example.com.", dns.TypeA).Pack()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response, err := proxy.requestUpstreamDNS(ctx, query, "udp")
+	var networkErr net.Error
+	if response != nil || !errors.As(err, &networkErr) || !networkErr.Timeout() {
+		t.Fatalf("expected a timeout while discarding the malformed packet, got %v: %v", response, err)
+	}
+}

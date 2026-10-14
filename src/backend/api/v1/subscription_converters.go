@@ -44,9 +44,10 @@ func SubscriptionFromReq(req types.SubscriptionReq, existing *models.Subscriptio
 		if existing != nil {
 			existingRules = existing.Rules
 		}
+		existingIDs := indexSubscriptionRuleIDs(existingRules)
 		newRules := make([]*models.SubscriptionRule, len(*req.Rules))
 		for i, ruleReq := range *req.Rules {
-			r, err := SubscriptionRuleFromReq(ruleReq, existingRules)
+			r, err := subscriptionRuleFromReq(ruleReq, existingIDs)
 			if err != nil {
 				return nil, err
 			}
@@ -61,13 +62,22 @@ func SubscriptionFromReq(req types.SubscriptionReq, existing *models.Subscriptio
 }
 
 func SubscriptionRuleFromReq(ruleReq types.SubscriptionRuleReq, existingRules []*models.SubscriptionRule) (*models.SubscriptionRule, error) {
+	return subscriptionRuleFromReq(ruleReq, indexSubscriptionRuleIDs(existingRules))
+}
+
+func indexSubscriptionRuleIDs(rules []*models.SubscriptionRule) map[intID.ID]struct{} {
+	ids := make(map[intID.ID]struct{}, len(rules))
+	for _, rule := range rules {
+		ids[rule.ID] = struct{}{}
+	}
+	return ids
+}
+
+func subscriptionRuleFromReq(ruleReq types.SubscriptionRuleReq, existingIDs map[intID.ID]struct{}) (*models.SubscriptionRule, error) {
 	rule := &models.SubscriptionRule{}
 	if ruleReq.ID != nil {
-		for _, r := range existingRules {
-			if r.ID == *ruleReq.ID {
-				rule.ID = r.ID
-				break
-			}
+		if _, exists := existingIDs[*ruleReq.ID]; exists {
+			rule.ID = *ruleReq.ID
 		}
 	}
 	if rule.ID.IsZero() {

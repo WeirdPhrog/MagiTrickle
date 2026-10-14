@@ -12,6 +12,8 @@ import (
 	"magitrickle/utils/iptables"
 	"magitrickle/utils/netfilterTools"
 	"magitrickle/utils/recordsCache"
+
+	"github.com/miekg/dns"
 )
 
 // Run in an isolated network namespace. Covers the application's actual Sync,
@@ -80,4 +82,13 @@ func TestRealRuleSetSync(t *testing.T) {
 		t.Fatal("invalid bulk edit disrupted routing")
 	}
 	assertHosts(false)
+	// Raw zero and oversized DNS TTLs must remain finite in real ipsets.
+	a.config.Netfilter.IPSet.AdditionalTTL = 0
+	for _, ttl := range []uint32{0, ^uint32(0)} {
+		check(g.DelIPv4Subnet(host4))
+		check(g.DelIPv6Subnet(host6))
+		a.processARecord(dns.A{Hdr: dns.RR_Header{Name: "example.com.", Ttl: ttl}, A: ip4}, "test", "", "udp")
+		a.processAAAARecord(dns.AAAA{Hdr: dns.RR_Header{Name: "example.com.", Ttl: ttl}, AAAA: ip6}, "test", "", "udp")
+		assertHosts(false)
+	}
 }

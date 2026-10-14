@@ -327,22 +327,16 @@ func (h *Handler) PutRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated := *requestGroup(r)
+	existingIDs := indexRuleIDs(updated.Rules)
 	newRules := make([]*models.Rule, len(*req.Rules))
 	for i, rr := range *req.Rules {
 		if rr.ID != nil {
-			found := false
-			for _, old := range updated.Rules {
-				if old.ID == *rr.ID {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if _, found := existingIDs[*rr.ID]; !found {
 				utils.WriteError(w, http.StatusNotFound, "rule not found")
 				return
 			}
 		}
-		newRules[i], err = RuleFromReq(rr, updated.Rules)
+		newRules[i], err = ruleFromReq(rr, existingIDs)
 		if err != nil {
 			utils.WriteError(w, http.StatusBadRequest, err.Error())
 			return

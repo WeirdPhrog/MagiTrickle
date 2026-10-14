@@ -14,6 +14,27 @@ import (
 
 var hexDigits = []byte("0123456789abcdef")
 
+// ipset's maximum finite timeout, in seconds (see ipset's timeout option).
+const maxRoutingTTL = 2147483
+
+func routingTTL(ttl uint32, additional time.Duration) uint32 {
+	seconds := uint64(ttl)
+	if additional > 0 {
+		seconds += uint64(additional / time.Second)
+		if additional%time.Second != 0 {
+			seconds++
+		}
+	}
+	if seconds == 0 {
+		// DNS TTL=0 must not become an ipset entry with a permanent lifetime.
+		return 1
+	}
+	if seconds > maxRoutingTTL {
+		return maxRoutingTTL
+	}
+	return uint32(seconds)
+}
+
 func formatID(id uint16) string {
 	return string([]byte{
 		hexDigits[id>>12&0xf],
@@ -36,7 +57,7 @@ func remainingTTL(deadline, now time.Time) uint32 {
 	if duration <= 0 {
 		return 0
 	}
-	return uint32((duration + time.Second - 1) / time.Second)
+	return routingTTL(0, duration)
 }
 
 func (a *App) startDNSListeners(ctx context.Context, errChan chan error) {
@@ -187,17 +208,14 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 		Str("network", network).
 		Msg("processing A record")
 
-	ttlDuration := aRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := routingTTL(aRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAddress(domainName, aRecord.A, ttlDuration)
 
 	names := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.ruleSetSnapshot() {
 	Rule:
-		for _, domain := range group.RuleModels() {
-			if !domain.IsEnabled() {
-				continue
-			}
+		for _, domain := range group.domainRules() {
 			for _, name := range names {
 				if !domain.IsMatch(name) {
 					continue
@@ -258,17 +276,14 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 		Str("network", network).
 		Msg("processing AAAA record")
 
-	ttlDuration := aaaaRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := routingTTL(aaaaRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAddress(domainName, aaaaRecord.AAAA, ttlDuration)
 
 	names := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.ruleSetSnapshot() {
 	Rule:
-		for _, domain := range group.RuleModels() {
-			if !domain.IsEnabled() {
-				continue
-			}
+		for _, domain := range group.domainRules() {
 			for _, name := range names {
 				if !domain.IsMatch(name) {
 					continue
@@ -317,7 +332,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 		Str("network", network).
 		Msg("processing CNAME record")
 
-	ttlDuration := cNameRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := routingTTL(cNameRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAlias(domainName, targetName, ttlDuration)
 
@@ -326,10 +341,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 	aliases := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.ruleSetSnapshot() {
 	Rule:
-		for _, domain := range group.RuleModels() {
-			if !domain.IsEnabled() {
-				continue
-			}
+		for _, domain := range group.domainRules() {
 			for _, alias := range aliases {
 				if !domain.IsMatch(alias) {
 					continue
@@ -376,7 +388,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 							Msg("added subnet")
 					}
 				}
-				continue Rule
+				break Rule
 			}
 		}
 	}

@@ -56,6 +56,9 @@ jobs:
           go vet -tags testing ./...
           test -z "$(gofmt -l .)"
           go test -race -tags 'testing entware entware_kn' ./internal/interfaces
+      - name: Large rule list benchmarks
+        working-directory: src/backend
+        run: go test -tags testing -run '^$' -bench 'Benchmark(DNSRuleScan|BulkRuleConversion)$' -benchtime=100ms . ./api/v1
       - name: Install kernel test and shell lint tools
         run: |
           sudo apt-get update
@@ -190,11 +193,15 @@ jobs:
           cat > /tmp/release-notes <<'EOF'
           Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
 
-          Subscriptions now have one shared download-interface setting, saved immediately from the Subscriptions page. Preview, manual sync and scheduled updates try that interface first, then retry via the system route on failure. Existing rules survive failed downloads. Remote DNS follows the interface; router-local DNS proxies retain their configured upstream routing.
+          Runtime fixes: restore IPv4/IPv6 routes after VPN/interface recreation even when the gateway is unchanged; keep zero and oversized DNS TTLs finite in ipset; discard stale DNS replies with the wrong transaction ID on reused connections.
+
+          Large lists: DNS matching skips IP/subnet-only rules, bulk rule edits use an ID index, and overlapping CNAME rules no longer repeat the same ipset updates. Rule order and Groups priority are preserved.
+
+          Subscriptions retain one shared download-interface setting with fallback to the system route. The download selector no longer offers the virtual blackhole target. IPv6 addresses in logs use valid notation.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 
-          CI includes unit/race tests, real iptables legacy/nft packet tests in isolated network namespaces, installer tests, frontend checks and router package builds. Actual router/VPN validation remains necessary.
+          CI includes unit/race tests, large-list benchmarks, real iptables legacy/nft packet and route-restoration tests in isolated network namespaces, installer tests, frontend checks and router package builds. Performance benchmarks run on the CI host, not a physical router.
           EOF
           if gh release view "v$VERSION" --json isDraft >/dev/null 2>&1; then
             test "$(gh release view "v$VERSION" --json targetCommitish --jq .targetCommitish)" = "$GITHUB_SHA"

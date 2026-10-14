@@ -19,7 +19,7 @@ import (
 
 type RuleSet struct {
 	spec  rulesets.Spec
-	model atomic.Pointer[models.Group]
+	model atomic.Pointer[ruleSetModel]
 
 	enabled atomic.Bool
 	locker  sync.Mutex
@@ -31,6 +31,11 @@ type RuleSet struct {
 	permanentIPv6 map[netfilterTools.IPv6Subnet]bool
 }
 
+type ruleSetModel struct {
+	group       *models.Group
+	domainRules []*models.Rule
+}
+
 func (g *RuleSet) Enabled() bool {
 	return g.enabled.Load()
 }
@@ -40,7 +45,7 @@ func newRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
 		spec: spec,
 		app:  app,
 	}
-	g.model.Store(spec.Model)
+	g.storeModel(spec.Model)
 	return g, nil
 }
 
@@ -50,7 +55,38 @@ func NewRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
 
 func (g *RuleSet) Model() *models.Group {
 	// Published models and their rules are immutable. Updates replace the model.
-	return g.model.Load()
+	return g.model.Load().group
+}
+
+func (g *RuleSet) storeModel(group *models.Group) {
+	rules := g.spec.Rules
+	if group != nil {
+		rules = group.Rules
+	}
+	model := &ruleSetModel{group: group}
+	for _, rule := range rules {
+		if !rule.Enable {
+			continue
+		}
+		switch rule.Type {
+		case models.RuleTypeDomain, models.RuleTypeNamespace, models.RuleTypeWildcard, models.RuleTypeRegEx:
+			model.domainRules = append(model.domainRules, rule)
+		}
+	}
+	// Publish the model and its DNS subset together, including on rollback.
+	g.model.Store(model)
+}
+
+func (g *RuleSet) domainRules() []*models.Rule {
+	model := g.model.Load()
+	if model.group != nil {
+		if !model.group.Enable {
+			return nil
+		}
+	} else if !g.spec.Enable {
+		return nil
+	}
+	return model.domainRules
 }
 
 func (g *RuleSet) IDValue() intID.ID {
@@ -103,7 +139,7 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 			return err
 		}
 	}
-	g.model.Store(model)
+	g.storeModel(model)
 	apply := func() error {
 		if !running {
 			return nil
@@ -118,7 +154,7 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 	}
 	if err := apply(); err != nil {
 		cleanupErr := g.disable()
-		g.model.Store(previous)
+		g.storeModel(previous)
 		return errors.Join(err, cleanupErr, apply())
 	}
 	return nil

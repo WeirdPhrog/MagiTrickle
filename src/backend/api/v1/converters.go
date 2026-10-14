@@ -41,9 +41,10 @@ func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, er
 	}
 
 	if req.Rules != nil {
+		existingIDs := indexRuleIDs(group.Rules)
 		newRules := make([]*models.Rule, len(*req.Rules))
 		for i, ruleReq := range *req.Rules {
-			r, err := RuleFromReq(ruleReq, group.Rules)
+			r, err := ruleFromReq(ruleReq, existingIDs)
 			if err != nil {
 				return nil, err
 			}
@@ -55,13 +56,22 @@ func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, er
 }
 
 func RuleFromReq(ruleReq types.RuleReq, existingRules []*models.Rule) (*models.Rule, error) {
+	return ruleFromReq(ruleReq, indexRuleIDs(existingRules))
+}
+
+func indexRuleIDs(rules []*models.Rule) map[intID.ID]struct{} {
+	ids := make(map[intID.ID]struct{}, len(rules))
+	for _, rule := range rules {
+		ids[rule.ID] = struct{}{}
+	}
+	return ids
+}
+
+func ruleFromReq(ruleReq types.RuleReq, existingIDs map[intID.ID]struct{}) (*models.Rule, error) {
 	var rule *models.Rule
 	if ruleReq.ID != nil {
-		for _, r := range existingRules {
-			if r.ID == *ruleReq.ID {
-				rule = &models.Rule{ID: r.ID}
-				break
-			}
+		if _, exists := existingIDs[*ruleReq.ID]; exists {
+			rule = &models.Rule{ID: *ruleReq.ID}
 		}
 	}
 	if rule == nil {

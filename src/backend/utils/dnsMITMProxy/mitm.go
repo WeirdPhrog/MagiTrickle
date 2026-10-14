@@ -59,6 +59,9 @@ func (p *DNSMITMProxy) Close() error {
 }
 
 func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string) ([]byte, error) {
+	if len(req) < 12 {
+		return nil, fmt.Errorf("DNS request is shorter than its header")
+	}
 	var pool *connPool
 	if network == "tcp" {
 		pool = p.tcpConnPool
@@ -118,24 +121,39 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
+		if !matchesDNSResponse(req, resp) {
+			_ = upstreamConn.Close()
+			return nil, fmt.Errorf("unexpected DNS response header or transaction ID")
+		}
 	} else {
 		bufPtr := p.bufferPool.Get().(*[]byte)
 		defer p.bufferPool.Put(bufPtr)
 		buf := *bufPtr
 
-		n, err := upstreamConn.Read(buf)
-		if err != nil {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("failed to read response: %w", err)
+		for {
+			n, err := upstreamConn.Read(buf)
+			if err != nil {
+				_ = upstreamConn.Close()
+				return nil, fmt.Errorf("failed to read response: %w", err)
+			}
+			// A reused UDP socket can still contain a duplicate reply to an
+			// earlier query. Ignore it without extending this query's deadline.
+			if !matchesDNSResponse(req, buf[:n]) {
+				continue
+			}
+			resp = append([]byte(nil), buf[:n]...)
+			break
 		}
-		resp = make([]byte, n)
-		copy(resp, buf[:n])
 	}
 
 	// Return connection to pool
 	pool.Put(upstreamConn)
 
 	return resp, nil
+}
+
+func matchesDNSResponse(req, resp []byte) bool {
+	return len(resp) >= 12 && resp[2]&0x80 != 0 && req[0] == resp[0] && req[1] == resp[1]
 }
 
 func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req []byte, network string) ([]byte, error) {
