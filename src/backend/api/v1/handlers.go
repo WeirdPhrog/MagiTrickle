@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -142,41 +143,37 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "no groups in request")
 		return
 	}
-	for _, g := range h.userGroups() {
-		_ = g.Disable()
+	existing := make(map[intID.ID]*models.Group)
+	for _, group := range h.userGroups() {
+		existing[group.Model().ID] = group.Model()
 	}
 	newGroups := make([]*models.Group, len(*req.Groups))
-	for i, gReq := range *req.Groups {
-		var existing *models.Group
-		for _, g := range h.userGroups() {
-			if gReq.ID != nil && g.Model().ID == *gReq.ID {
-				existing = g.Model()
-				break
-			}
+	ids := make(map[intID.ID]bool)
+	for i, req := range *req.Groups {
+		var previous *models.Group
+		if req.ID != nil {
+			previous = existing[*req.ID]
 		}
-		newGroups[i], err = GroupFromReq(gReq, existing)
+		group, err := GroupFromReq(req, previous)
 		if err != nil {
 			utils.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-	}
-	h.app.ClearGroups()
-	for _, grp := range newGroups {
-		if err := h.app.AddGroup(grp); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		if ids[group.ID] {
+			utils.WriteError(w, http.StatusBadRequest, "duplicate group ID")
 			return
 		}
+		ids[group.ID] = true
+		newGroups[i] = group
 	}
-	if err := h.app.SyncSubscriptionRuleSets(); err != nil {
+	if err := h.app.ReplaceGroups(newGroups); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromGroups(newGroups, true))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !h.saveIfRequested(w, r, false) {
+		return
 	}
+	utils.WriteJson(w, http.StatusOK, RespFromGroups(newGroups, true))
 }
 
 // CreateGroup
@@ -207,12 +204,10 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromGroup(group, true))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !h.saveIfRequested(w, r, false) {
+		return
 	}
+	utils.WriteJson(w, http.StatusOK, RespFromGroup(group, true))
 }
 
 // GetGroup
@@ -228,10 +223,7 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500			{object}	types.ErrorRes
 //	@Router			/api/v1/groups/{groupID} [get]
 func (h *Handler) GetGroup(w http.ResponseWriter, r *http.Request) {
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	withRules := r.URL.Query().Get("with_rules") == "true"
-	group := h.userGroups()[groupIdx].Model()
-	utils.WriteJson(w, http.StatusOK, RespFromGroup(group, withRules))
+	utils.WriteJson(w, http.StatusOK, RespFromGroup(requestGroup(r), r.URL.Query().Get("with_rules") == "true"))
 }
 
 // PutGroup
@@ -255,39 +247,15 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-
-	enabled := groupWrapper.Enabled()
-	if enabled {
-		if err := groupWrapper.Disable(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to disable group: %v", err))
-			return
-		}
-	}
-
-	updatedGroup, err := GroupFromReq(req, groupWrapper.Model())
+	updated, err := GroupFromReq(req, requestGroup(r))
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	if enabled {
-		if err := groupWrapper.Enable(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to enable group: %v", err))
-			return
-		}
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+	if !h.updateGroup(w, updated) || !h.saveIfRequested(w, r, false) {
+		return
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromGroup(updatedGroup, true))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
-	}
+	utils.WriteJson(w, http.StatusOK, RespFromGroup(updated, true))
 }
 
 // DeleteGroup
@@ -303,20 +271,19 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500	{object}	types.ErrorRes
 //	@Router			/api/v1/groups/{groupID} [delete]
 func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-	if groupWrapper.Enabled() {
-		if err := groupWrapper.Disable(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to disable group: %v", err))
-			return
-		}
+	removed, err := h.app.RemoveGroupByID(requestGroup(r).ID)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	h.app.RemoveGroupByID(groupWrapper.Model().ID)
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !removed {
+		utils.WriteError(w, http.StatusNotFound, "group not found")
+		return
 	}
+	if !h.saveIfRequested(w, r, false) {
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // GetRules
@@ -331,9 +298,7 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500		{object}	types.ErrorRes
 //	@Router			/api/v1/groups/{groupID}/rules [get]
 func (h *Handler) GetRules(w http.ResponseWriter, r *http.Request) {
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	rules := h.userGroups()[groupIdx].Model().Rules
-	utils.WriteJson(w, http.StatusOK, RespFromRules(rules))
+	utils.WriteJson(w, http.StatusOK, RespFromRules(requestGroup(r).Rules))
 }
 
 // PutRules
@@ -361,18 +326,13 @@ func (h *Handler) PutRules(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "no rules in request")
 		return
 	}
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-	enabled := groupWrapper.Enabled()
-
+	updated := *requestGroup(r)
 	newRules := make([]*models.Rule, len(*req.Rules))
 	for i, rr := range *req.Rules {
-		id := intID.RandomID()
 		if rr.ID != nil {
 			found := false
-			for _, oldRule := range groupWrapper.Model().Rules {
-				if oldRule.ID == *rr.ID {
-					id = *rr.ID
+			for _, old := range updated.Rules {
+				if old.ID == *rr.ID {
 					found = true
 					break
 				}
@@ -382,27 +342,17 @@ func (h *Handler) PutRules(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		newRules[i] = &models.Rule{
-			ID:     id,
-			Name:   rr.Name,
-			Type:   rr.Type,
-			Rule:   rr.Rule,
-			Enable: rr.Enable,
-		}
-	}
-	groupWrapper.Model().Rules = newRules
-	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
+		newRules[i], err = RuleFromReq(rr, updated.Rules)
+		if err != nil {
+			utils.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromRules(newRules))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	updated.Rules = newRules
+	if !h.updateGroup(w, &updated) || !h.saveIfRequested(w, r, false) {
+		return
 	}
+	utils.WriteJson(w, http.StatusOK, RespFromRules(newRules))
 }
 
 // CreateRule
@@ -426,28 +376,17 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-	enabled := groupWrapper.Enabled()
-
-	rule, err := RuleFromReq(req, groupWrapper.Model().Rules)
+	updated := *requestGroup(r)
+	rule, err := RuleFromReq(req, updated.Rules)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	groupWrapper.Model().Rules = append(groupWrapper.Model().Rules, rule)
-	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+	updated.Rules = append(append([]*models.Rule(nil), updated.Rules...), rule)
+	if !h.updateGroup(w, &updated) || !h.saveIfRequested(w, r, false) {
+		return
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromRule(rule))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
-	}
 }
 
 // GetRule
@@ -463,10 +402,8 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500		{object}	types.ErrorRes
 //	@Router			/api/v1/groups/{groupID}/rules/{ruleID} [get]
 func (h *Handler) GetRule(w http.ResponseWriter, r *http.Request) {
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	ruleIdx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
-	rule := h.userGroups()[groupIdx].Model().Rules[ruleIdx]
-	utils.WriteJson(w, http.StatusOK, RespFromRule(rule))
+	idx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
+	utils.WriteJson(w, http.StatusOK, RespFromRule(requestGroup(r).Rules[idx]))
 }
 
 // PutRule
@@ -491,29 +428,15 @@ func (h *Handler) PutRule(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-	enabled := groupWrapper.Enabled()
-
-	ruleIdx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
-	rule := groupWrapper.Model().Rules[ruleIdx]
-	rule.Name = req.Name
-	rule.Type = req.Type
-	rule.Rule = req.Rule
-	rule.Enable = req.Enable
-
-	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+	updated := *requestGroup(r)
+	idx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
+	rule := &models.Rule{ID: updated.Rules[idx].ID, Name: req.Name, Type: req.Type, Rule: req.Rule, Enable: req.Enable}
+	updated.Rules = append([]*models.Rule(nil), updated.Rules...)
+	updated.Rules[idx] = rule
+	if !h.updateGroup(w, &updated) || !h.saveIfRequested(w, r, false) {
+		return
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromRule(rule))
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
-	}
 }
 
 // DeleteRule
@@ -530,21 +453,35 @@ func (h *Handler) PutRule(w http.ResponseWriter, r *http.Request) {
 //	@Failure		500	{object}	types.ErrorRes
 //	@Router			/api/v1/groups/{groupID}/rules/{ruleID} [delete]
 func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
-	groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-	groupWrapper := h.userGroups()[groupIdx]
-	enabled := groupWrapper.Enabled()
+	updated := *requestGroup(r)
+	idx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
+	updated.Rules = append(append([]*models.Rule(nil), updated.Rules[:idx]...), updated.Rules[idx+1:]...)
+	if !h.updateGroup(w, &updated) || !h.saveIfRequested(w, r, false) {
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "ok"})
+}
 
-	ruleIdx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
-	groupWrapper.Model().Rules = append(groupWrapper.Model().Rules[:ruleIdx], groupWrapper.Model().Rules[ruleIdx+1:]...)
-	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
+func (h *Handler) updateGroup(w http.ResponseWriter, group *models.Group) bool {
+	if err := h.app.UpdateGroup(group); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, app.ErrGroupNotFound) {
+			status = http.StatusNotFound
 		}
+		utils.WriteError(w, status, err.Error())
+		return false
 	}
-	if r.URL.Query().Get("save") == "true" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	return true
+}
+
+func (h *Handler) saveIfRequested(w http.ResponseWriter, r *http.Request, defaultSave bool) bool {
+	save := r.URL.Query().Get("save")
+	if save != "true" && (!defaultSave || save == "false") {
+		return true
 	}
+	if err := h.app.SaveConfig(); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return false
+	}
+	return true
 }

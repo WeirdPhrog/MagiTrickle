@@ -23,6 +23,12 @@ import (
 
 // Start запускает приложение (ядро)
 func (a *App) Start(ctx context.Context) (err error) {
+	a.stateMu.RLock()
+	loadErr := a.configLoadErr
+	a.stateMu.RUnlock()
+	if loadErr != nil {
+		return fmt.Errorf("cannot start with unreadable config: %w", loadErr)
+	}
 	if !a.enabled.CompareAndSwap(false, true) {
 		return ErrAlreadyRunning
 	}
@@ -36,12 +42,14 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}()
 
 	a.setupLogging()
+	newCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	a.dnsMITM = dnsMITMProxy.NewDNSMITMProxy(
-		net.JoinHostPort(a.config.DNSProxy.Upstream.Address, strconv.Itoa(int(a.config.DNSProxy.Upstream.Port))),
-		a.config.DNSProxy.MaxIdleConns,
-		a.config.DNSProxy.MaxConcurrent,
-		a.config.DNSProxy.Timeout,
+		net.JoinHostPort(a.Config().DNSProxy.Upstream.Address, strconv.Itoa(int(a.Config().DNSProxy.Upstream.Port))),
+		a.Config().DNSProxy.MaxIdleConns,
+		a.Config().DNSProxy.MaxConcurrent,
+		a.Config().DNSProxy.Timeout,
 	)
 	a.dnsMITM.RequestHook = a.dnsRequestHook
 	a.dnsMITM.ResponseHook = a.dnsResponseHook
@@ -52,9 +60,9 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}()
 
 	a.recordsCache = recordsCache.New()
-	a.recordsCache.StartCleanup(ctx, 30*time.Second)
+	a.recordsCache.StartCleanup(newCtx, 30*time.Second)
 
-	nfh, err := netfilterTools.New(a.config.Netfilter.IPTables.ChainPrefix, a.config.Netfilter.IPSet.TablePrefix, a.config.Netfilter.DisableIPv4, a.config.Netfilter.DisableIPv6, a.config.Netfilter.StartMarkTableIndex)
+	nfh, err := netfilterTools.New(a.Config().Netfilter.IPTables.ChainPrefix, a.Config().Netfilter.IPSet.TablePrefix, a.Config().Netfilter.DisableIPv4, a.Config().Netfilter.DisableIPv6, a.Config().Netfilter.StartMarkTableIndex)
 	if err != nil {
 		return fmt.Errorf("netfilter helper init fail: %w", err)
 	}
@@ -90,26 +98,10 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}
 	defer close(addrUpdateDone)
 
-	newCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errChan := make(chan error)
-
-	httpServer, err := api.SetupHTTP(a, errChan)
-	if err != nil {
-		return fmt.Errorf("setup http fail: %w", err)
-	}
-	defer httpServer.Close()
-
-	unixServer, err := api.SetupUnixSocket(a, errChan)
-	if err != nil {
-		return fmt.Errorf("setup unix socket fail: %w", err)
-	}
-	defer unixServer.Close()
-
-	a.startDNSListeners(newCtx, errChan)
+	errChan := make(chan error, 4)
 
 	var interfaceAddrs []netlink.Addr
-	for _, linkName := range a.config.Link {
+	for _, linkName := range a.Config().Link {
 		link, err := netlink.LinkByName(linkName)
 		if err != nil {
 			return fmt.Errorf("failed to find link %s: %w", linkName, err)
@@ -121,8 +113,8 @@ func (a *App) Start(ctx context.Context) (err error) {
 		interfaceAddrs = append(interfaceAddrs, linkAddrList...)
 	}
 
-	if !a.config.DNSProxy.DisableRemap53 {
-		a.dnsOverrider = a.nfHelper.PortRemap("DNSOR", 53, a.config.DNSProxy.Host.Port, interfaceAddrs)
+	if !a.Config().DNSProxy.DisableRemap53 {
+		a.dnsOverrider = a.nfHelper.PortRemap("DNSOR", 53, a.Config().DNSProxy.Host.Port, interfaceAddrs)
 		if err := a.dnsOverrider.Enable(); err != nil {
 			return fmt.Errorf("failed to override DNS: %v", err)
 		}
@@ -145,13 +137,44 @@ func (a *App) Start(ctx context.Context) (err error) {
 			return fmt.Errorf("failed to sync group: %w", err)
 		}
 	}
-	go a.StartSubscriptionAutoUpdate(newCtx)
+	// Publish the API only after every rule set is ready.
+	httpServer, err := api.SetupHTTP(a, errChan)
+	if err != nil {
+		return fmt.Errorf("setup http fail: %w", err)
+	}
+	if httpServer != nil {
+		defer httpServer.Close()
+	}
+	unixServer, err := api.SetupUnixSocket(a, errChan)
+	if err != nil {
+		return fmt.Errorf("setup unix socket fail: %w", err)
+	}
+	defer unixServer.Close()
+	a.startDNSListeners(newCtx, errChan)
+	autoDone := make(chan struct{})
+	go func() { defer close(autoDone); a.StartSubscriptionAutoUpdate(newCtx) }()
+	defer func() {
+		cancel()
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if httpServer != nil {
+			_ = httpServer.Shutdown(shutdownCtx)
+		}
+		_ = unixServer.Shutdown(shutdownCtx)
+		<-autoDone
+	}()
 
 	for {
 		select {
-		case event := <-linkUpdateChannel:
+		case event, ok := <-linkUpdateChannel:
+			if !ok {
+				return fmt.Errorf("link update subscription closed")
+			}
 			a.handleLink(event)
-		case event := <-addrUpdateChannel:
+		case event, ok := <-addrUpdateChannel:
+			if !ok {
+				return fmt.Errorf("address update subscription closed")
+			}
 			a.handleAddr(event)
 		case err := <-errChan:
 			return err
@@ -162,6 +185,8 @@ func (a *App) Start(ctx context.Context) (err error) {
 }
 
 func (a *App) ForceCommitIPTables() error {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
 	if a.nfHelper == nil {
 		return nil
 	}
@@ -184,7 +209,7 @@ func (a *App) ForceCommitIPTables() error {
 }
 
 func (a *App) setupLogging() {
-	switch a.config.LogLevel {
+	switch a.Config().LogLevel {
 	case "trace":
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	case "debug":

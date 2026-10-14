@@ -30,8 +30,10 @@ var (
 type App struct {
 	enabled atomic.Bool
 
-	config  models.AppConfig
-	stateMu sync.RWMutex
+	config        models.AppConfig
+	stateMu       sync.RWMutex
+	configFileMu  sync.Mutex
+	configLoadErr error
 
 	subscriptionSyncMu sync.Mutex
 
@@ -57,6 +59,8 @@ func New() *App {
 
 // Config возвращает конфигурацию
 func (a *App) Config() models.AppConfig {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
 	return a.config
 }
 
@@ -89,20 +93,14 @@ func (a *App) AddGroup(groupModel *models.Group) error {
 }
 
 func (a *App) addGroupLocked(groupModel *models.Group) error {
+	if err := validateGroups([]*models.Group{groupModel}); err != nil {
+		return err
+	}
 	for _, group := range a.userRuleSets {
 		if groupModel.ID == group.IDValue() {
 			return ErrGroupIDConflict
 		}
 	}
-	// Проверка уникальности rule.ID внутри группы.
-	dup := make(map[[4]byte]struct{})
-	for _, rule := range groupModel.Rules {
-		if _, exists := dup[rule.ID]; exists {
-			return ErrRuleIDConflict
-		}
-		dup[rule.ID] = struct{}{}
-	}
-
 	grp, err := NewRuleSet(groupruntime.BuildRuntimeRuleSet(groupModel), a)
 	if err != nil {
 		return fmt.Errorf("failed to create group: %w", err)
@@ -136,20 +134,29 @@ func (a *App) addGroupLocked(groupModel *models.Group) error {
 func (a *App) RemoveGroupByIndex(idx int) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
+	if idx < 0 || idx >= len(a.userRuleSets) {
+		return
+	}
+	if err := a.userRuleSets[idx].Disable(); err != nil {
+		return
+	}
 	a.userRuleSets = append(a.userRuleSets[:idx], a.userRuleSets[idx+1:]...)
 }
 
 // RemoveGroupByID removes a group by ID.
-func (a *App) RemoveGroupByID(id intID.ID) bool {
+func (a *App) RemoveGroupByID(id intID.ID) (bool, error) {
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
 	for idx, group := range a.userRuleSets {
 		if group.IDValue() == id {
+			if err := group.Disable(); err != nil {
+				return false, err
+			}
 			a.userRuleSets = append(a.userRuleSets[:idx], a.userRuleSets[idx+1:]...)
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // WithSubscriptions invokes fn while holding the state read lock so the slice
@@ -233,7 +240,7 @@ func (a *App) RemoveSubscriptionByID(id intID.ID) (bool, error) {
 
 // ListInterfaces возвращает список сетевых интерфейсов, доступных для выбора в UI.
 func (a *App) ListInterfaces() ([]models.InterfaceInfo, error) {
-	return interfaces.List(a.config.ShowAllInterfaces)
+	return interfaces.List(a.Config().ShowAllInterfaces)
 }
 
 // DnsOverrider возвращает dnsOverrider

@@ -15,7 +15,6 @@ import (
 	"magitrickle/utils/intID"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/rs/zerolog/log"
 )
 
 // GetSubscriptions
@@ -105,10 +104,8 @@ func (h *Handler) PutSubscriptions(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if r.URL.Query().Get("save") != "false" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !h.saveIfRequested(w, r, true) {
+		return
 	}
 	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -154,10 +151,8 @@ func (h *Handler) CreateSubscription(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, status, err.Error())
 		return
 	}
-	if r.URL.Query().Get("save") != "false" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !h.saveIfRequested(w, r, true) {
+		return
 	}
 	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -210,10 +205,8 @@ func (h *Handler) SyncSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if changed && r.URL.Query().Get("save") != "false" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if changed && !h.saveIfRequested(w, r, true) {
+		return
 	}
 
 	rulesRes := RespFromSubscriptionRules(target.Rules)
@@ -263,10 +256,8 @@ func (h *Handler) DeleteSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Query().Get("save") != "false" {
-		if err := h.app.SaveConfig(); err != nil {
-			log.Error().Err(err).Msg("failed to save config file")
-		}
+	if !h.saveIfRequested(w, r, true) {
+		return
 	}
 	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -32,17 +32,18 @@ func (p *connPool) Get(ctx context.Context) (net.Conn, error) {
 		p.mu.Unlock()
 		return nil, errors.New("pool is closed")
 	}
-	p.mu.Unlock()
-
 	// Check context before trying to get/create connection
 	if ctx.Err() != nil {
+		p.mu.Unlock()
 		return nil, ctx.Err()
 	}
 
 	select {
 	case conn := <-p.pool:
+		p.mu.Unlock()
 		return conn, nil
 	default:
+		p.mu.Unlock()
 		var d net.Dialer
 		return d.DialContext(ctx, p.network, p.addr)
 	}
@@ -50,13 +51,11 @@ func (p *connPool) Get(ctx context.Context) (net.Conn, error) {
 
 func (p *connPool) Put(conn net.Conn) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
-		p.mu.Unlock()
 		_ = conn.Close()
 		return
 	}
-	p.mu.Unlock()
-
 	select {
 	case p.pool <- conn:
 	default:
@@ -66,12 +65,11 @@ func (p *connPool) Put(conn net.Conn) {
 
 func (p *connPool) Close() {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
-		p.mu.Unlock()
 		return
 	}
 	p.closed = true
-	p.mu.Unlock()
 
 	close(p.pool)
 	for conn := range p.pool {

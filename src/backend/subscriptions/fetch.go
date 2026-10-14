@@ -1,6 +1,7 @@
 package subscriptions
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,10 @@ const fetchTimeout = 15 * time.Second
 const maxFetchRedirects = 5
 
 func FetchList(rawURL string) (string, error) {
+	return FetchListContext(context.Background(), rawURL)
+}
+
+func FetchListContext(ctx context.Context, rawURL string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid url")
@@ -29,12 +34,16 @@ func FetchList(rawURL string) (string, error) {
 	visited := map[string]struct{}{parsed.String(): {}}
 
 	for redirects := 0; ; redirects++ {
-		resp, err := client.Get(parsed.String())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			return "", err
 		}
 
-		if resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound {
+		if resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusPermanentRedirect {
 			location, err := resp.Location()
 			resp.Body.Close()
 			if err != nil {

@@ -43,6 +43,7 @@ elif name == 'opkg':
         config = root / 'opt/var/lib/magitrickle/config.yaml'
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text('package defaults\n')
+        if os.environ.get('FAKE_PARTIAL_INSTALL_FAIL'): sys.exit(1)
     elif command != 'update':
         raise SystemExit('Unexpected opkg command: ' + command)
 elif name == 'S99magitrickle':
@@ -170,6 +171,13 @@ class InstallerTests(unittest.TestCase):
         self.existing_config('9999.1.1.1-1')
         self.env['FAKE_NEWER'] = '1'
         self.assertNotIn('opkg update', self.run_installer(success=False))
+
+    def test_partial_install_failure_restores_config(self):
+        config = self.existing_config()
+        before = config.read_bytes()
+        self.env['FAKE_PARTIAL_INSTALL_FAIL'] = '1'
+        self.run_installer(success=False)
+        self.assertEqual(config.read_bytes(), before)
 
     def test_explicit_version_allows_rollback(self):
         self.existing_config('9999.1.1.1-1')

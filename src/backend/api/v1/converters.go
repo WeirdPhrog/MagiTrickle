@@ -18,7 +18,8 @@ func GroupFromReq(req types.GroupReq, existing *models.Group) (*models.Group, er
 	if existing == nil {
 		group = &models.Group{ID: intID.RandomID()}
 	} else {
-		group = existing
+		copy := *existing
+		group = &copy
 	}
 	if req.ID != nil {
 		if existing != nil && group.ID != *req.ID {
@@ -58,7 +59,7 @@ func RuleFromReq(ruleReq types.RuleReq, existingRules []*models.Rule) (*models.R
 	if ruleReq.ID != nil {
 		for _, r := range existingRules {
 			if r.ID == *ruleReq.ID {
-				rule = r
+				rule = &models.Rule{ID: r.ID}
 				break
 			}
 		}

@@ -6,6 +6,9 @@ import (
 	"magitrickle/models"
 )
 
+// ConfigVersion describes the YAML schema, independently of the release tag.
+const ConfigVersion = "0.7.0"
+
 var DefaultAppConfig = models.AppConfig{
 	DNSProxy: models.AppConfigDNSProxy{
 		Host:            models.AppConfigDNSProxyServer{Address: "[::]", Port: 3553},

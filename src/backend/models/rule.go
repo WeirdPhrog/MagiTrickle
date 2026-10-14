@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"sync"
 
 	"magitrickle/utils/intID"
@@ -61,10 +62,10 @@ func (d *Rule) Compile() error {
 func (d *Rule) IsMatch(domainName string) bool {
 	switch d.Type {
 	case RuleTypeDomain:
-		return domainName == d.Rule
+		return strings.EqualFold(domainName, d.Rule)
 
 	case RuleTypeNamespace:
-		if domainName == d.Rule {
+		if strings.EqualFold(domainName, d.Rule) {
 			return true
 		}
 
@@ -73,10 +74,10 @@ func (d *Rule) IsMatch(domainName string) bool {
 		if domainLen < ruleLen+1 {
 			return false
 		}
-		return domainName[domainLen-ruleLen-1] == '.' && domainName[domainLen-ruleLen:] == d.Rule
+		return domainName[domainLen-ruleLen-1] == '.' && strings.EqualFold(domainName[domainLen-ruleLen:], d.Rule)
 
 	case RuleTypeWildcard:
-		return wildcard.Match(d.Rule, domainName)
+		return wildcard.Match(strings.ToLower(d.Rule), strings.ToLower(domainName))
 
 	case RuleTypeRegEx:
 		err := d.Compile()

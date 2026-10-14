@@ -206,8 +206,9 @@ func splitFields(data []byte) [][]byte {
 }
 
 func (ipt *IPTables) Commit() (err error) {
-	ipt.sync.RLock()
-	defer ipt.sync.RUnlock()
+	// The save/diff/restore transaction must not overlap another commit or edit.
+	ipt.sync.Lock()
+	defer ipt.sync.Unlock()
 
 	buf := new(bytes.Buffer)
 	start := time.Now()

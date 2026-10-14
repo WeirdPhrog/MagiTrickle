@@ -32,7 +32,7 @@ func trimFQDN(name string) string {
 
 func (a *App) startDNSListeners(ctx context.Context, errChan chan error) {
 	go func() {
-		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", a.config.DNSProxy.Host.Address, a.config.DNSProxy.Host.Port))
+		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", a.Config().DNSProxy.Host.Address, a.Config().DNSProxy.Host.Port))
 		if err != nil {
 			errChan <- fmt.Errorf("failed to resolve udp address: %v", err)
 			return
@@ -43,7 +43,7 @@ func (a *App) startDNSListeners(ctx context.Context, errChan chan error) {
 	}()
 
 	go func() {
-		addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", a.config.DNSProxy.Host.Address, a.config.DNSProxy.Host.Port))
+		addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", a.Config().DNSProxy.Host.Address, a.Config().DNSProxy.Host.Port))
 		if err != nil {
 			errChan <- fmt.Errorf("failed to resolve tcp address: %v", err)
 			return
@@ -79,7 +79,7 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 			Msg("requested record")
 	}
 
-	if a.config.DNSProxy.DisableFakePTR {
+	if a.Config().DNSProxy.DisableFakePTR {
 		return nil, nil, nil
 	}
 
@@ -103,7 +103,7 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.Msg, network string) (*dns.Msg, error) {
 	defer a.handleMessage(respMsg, clientAddr, network)
 
-	if a.config.DNSProxy.DisableDropAAAA {
+	if a.Config().DNSProxy.DisableDropAAAA {
 		return nil, nil
 	}
 
@@ -178,7 +178,7 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 		Str("network", network).
 		Msg("processing A record")
 
-	ttlDuration := aRecord.Hdr.Ttl + uint32(a.config.Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := aRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
 
 	a.recordsCache.AddAddress(domainName, aRecord.A, ttlDuration)
 
@@ -195,7 +195,7 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 				}
 
 				// TODO: Check already existed
-				subnet := netfilterTools.IPv4Subnet{Address: [4]byte(aRecord.A)}
+				subnet := netfilterTools.IPv4Subnet{Address: [4]byte(aRecord.A), CIDR: 32}
 				if err := group.AddIPv4Subnet(subnet, &ttlDuration); err != nil {
 					log.Error().
 						Err(err).
@@ -249,7 +249,7 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 		Str("network", network).
 		Msg("processing AAAA record")
 
-	ttlDuration := aaaaRecord.Hdr.Ttl + uint32(a.config.Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := aaaaRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
 
 	a.recordsCache.AddAddress(domainName, aaaaRecord.AAAA, ttlDuration)
 
@@ -266,7 +266,7 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 				}
 
 				// TODO: Check already existed
-				subnet := netfilterTools.IPv6Subnet{Address: [16]byte(aaaaRecord.AAAA)}
+				subnet := netfilterTools.IPv6Subnet{Address: [16]byte(aaaaRecord.AAAA), CIDR: 128}
 				if err := group.AddIPv6Subnet(subnet, &ttlDuration); err != nil {
 					log.Error().
 						Err(err).
@@ -308,7 +308,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 		Str("network", network).
 		Msg("processing CNAME record")
 
-	ttlDuration := cNameRecord.Hdr.Ttl + uint32(a.config.Netfilter.IPSet.AdditionalTTL.Seconds())
+	ttlDuration := cNameRecord.Hdr.Ttl + uint32(a.Config().Netfilter.IPSet.AdditionalTTL.Seconds())
 
 	a.recordsCache.AddAlias(domainName, targetName, ttlDuration)
 
@@ -335,13 +335,13 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 
 				for _, address := range addresses {
 					ttlDuration := address.Deadline.Sub(now).Seconds()
-					if ttlDuration <= 0 {
+					if ttlDuration < 1 {
 						continue
 					}
 					ttl := uint32(ttlDuration)
 
 					if len(address.Address) == net.IPv4len {
-						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}
+						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address), CIDR: 32}
 						if err := group.AddIPv4Subnet(subnet, &ttl); err != nil {
 							log.Error().
 								Err(err).
@@ -354,7 +354,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 							Str("cNameDomain", alias).
 							Msg("added subnet")
 					} else if len(address.Address) == net.IPv6len {
-						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address)}
+						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address), CIDR: 128}
 						if err := group.AddIPv6Subnet(subnet, &ttl); err != nil {
 							log.Error().
 								Err(err).

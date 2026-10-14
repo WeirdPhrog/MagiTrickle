@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"context"
+	"magitrickle/models"
 	"net/http"
 	"strconv"
 
@@ -11,6 +13,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+type groupContextKey struct{}
+
+func requestGroup(r *http.Request) *models.Group {
+	return r.Context().Value(groupContextKey{}).(*models.Group)
+}
 
 // NewRouter собирает маршруты API v1
 func NewRouter(a app.Main) chi.Router {
@@ -31,10 +39,9 @@ func NewRouter(a app.Main) chi.Router {
 						utils.WriteError(w, http.StatusBadRequest, "invalid group id")
 						return
 					}
-					for i, group := range h.userGroups() {
+					for _, group := range h.userGroups() {
 						if group.Model().ID == id {
-							r.Header.Set("groupIdx", strconv.Itoa(i))
-							next.ServeHTTP(w, r)
+							next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), groupContextKey{}, group.Model())))
 							return
 						}
 					}
@@ -57,8 +64,7 @@ func NewRouter(a app.Main) chi.Router {
 								utils.WriteError(w, http.StatusBadRequest, "invalid rule id")
 								return
 							}
-							groupIdx, _ := strconv.Atoi(r.Header.Get("groupIdx"))
-							for idx, rule := range h.userGroups()[groupIdx].Model().Rules {
+							for idx, rule := range requestGroup(r).Rules {
 								if rule.ID == id {
 									r.Header.Set("ruleIdx", strconv.Itoa(idx))
 									next.ServeHTTP(w, r)

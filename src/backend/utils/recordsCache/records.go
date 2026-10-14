@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,6 +31,7 @@ type Records struct {
 }
 
 func (r *Records) AddAlias(domainName, alias string, ttl uint32) {
+	domainName, alias = strings.ToLower(domainName), strings.ToLower(alias)
 	if domainName == alias {
 		return
 	}
@@ -69,6 +71,7 @@ func (r *Records) removeReverseAlias(alias, domainName string) {
 }
 
 func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
+	domainName = strings.ToLower(domainName)
 	r.locker.Lock()
 	defer r.locker.Unlock()
 
@@ -83,13 +86,14 @@ func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
 	}
 
 	r.addresses[domainName] = append(addresses, &Address{
-		Address:  addr,
+		Address:  bytes.Clone(addr),
 		Deadline: deadline,
 	})
 }
 
 // GetAliases возвращает все домены, которые ссылаются на данный (прямо или транзитивно)
 func (r *Records) GetAliases(domainName string) []string {
+	domainName = strings.ToLower(domainName)
 	r.locker.RLock()
 	defer r.locker.RUnlock()
 
@@ -97,12 +101,16 @@ func (r *Records) GetAliases(domainName string) []string {
 	queue := []string{domainName}
 	seen := make(map[string]struct{})
 	seen[domainName] = struct{}{}
+	now := time.Now()
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
 		for _, pointing := range r.reverseAliases[current] {
+			if alias := r.aliases[pointing]; alias == nil || !now.Before(alias.Deadline) {
+				continue
+			}
 			if _, ok := seen[pointing]; ok {
 				continue
 			}
@@ -116,6 +124,7 @@ func (r *Records) GetAliases(domainName string) []string {
 }
 
 func (r *Records) GetAddresses(domainName string) []*Address {
+	domainName = strings.ToLower(domainName)
 	r.locker.RLock()
 	defer r.locker.RUnlock()
 
@@ -129,7 +138,8 @@ func (r *Records) GetAddresses(domainName string) []*Address {
 			var valid []*Address
 			for _, addr := range addresses {
 				if !now.After(addr.Deadline) {
-					valid = append(valid, addr)
+					// Readers retain these records after the lock is released.
+					valid = append(valid, &Address{Address: bytes.Clone(addr.Address), Deadline: addr.Deadline})
 				}
 			}
 			if len(valid) > 0 {

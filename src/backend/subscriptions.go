@@ -87,7 +87,7 @@ func (a *App) StartSubscriptionAutoUpdate(ctx context.Context) {
 		return
 	}
 
-	if _, err := a.SyncDueSubscriptions(time.Now()); err != nil {
+	if _, err := a.syncDueSubscriptions(ctx, time.Now()); err != nil {
 		log.Error().Err(err).Msg("failed to sync subscriptions")
 	}
 
@@ -99,7 +99,7 @@ func (a *App) StartSubscriptionAutoUpdate(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := a.SyncDueSubscriptions(time.Now()); err != nil {
+			if _, err := a.syncDueSubscriptions(ctx, time.Now()); err != nil {
 				log.Error().Err(err).Msg("failed to sync subscriptions")
 			}
 		}
@@ -175,6 +175,10 @@ func (a *App) SyncSubscriptionByID(id intID.ID, now time.Time, urlOverride strin
 }
 
 func (a *App) SyncDueSubscriptions(now time.Time) (bool, error) {
+	return a.syncDueSubscriptions(context.Background(), now)
+}
+
+func (a *App) syncDueSubscriptions(ctx context.Context, now time.Time) (bool, error) {
 	a.subscriptionSyncMu.Lock()
 	defer a.subscriptionSyncMu.Unlock()
 
@@ -209,7 +213,10 @@ func (a *App) SyncDueSubscriptions(now time.Time) (bool, error) {
 	}
 	plans := make([]planResult, 0, len(due))
 	for _, item := range due {
-		list, err := subscriptions.FetchList(item.url)
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		list, err := subscriptions.FetchListContext(ctx, item.url)
 		if err != nil {
 			log.Error().Err(err).Str("subscription", item.id.String()).Msg("failed to fetch subscription")
 			continue

@@ -18,14 +18,17 @@ import (
 )
 
 type RuleSet struct {
-	spec rulesets.Spec
+	spec  rulesets.Spec
+	model atomic.Pointer[models.Group]
 
 	enabled atomic.Bool
 	locker  sync.Mutex
 
-	app         *App
-	ipset       *netfilterTools.IPSet
-	ipsetToLink *netfilterTools.IPSetToLink
+	app           *App
+	ipset         *netfilterTools.IPSet
+	ipsetToLink   *netfilterTools.IPSetToLink
+	permanentIPv4 map[netfilterTools.IPv4Subnet]bool
+	permanentIPv6 map[netfilterTools.IPv6Subnet]bool
 }
 
 func (g *RuleSet) Enabled() bool {
@@ -33,10 +36,12 @@ func (g *RuleSet) Enabled() bool {
 }
 
 func newRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
-	return &RuleSet{
+	g := &RuleSet{
 		spec: spec,
 		app:  app,
-	}, nil
+	}
+	g.model.Store(spec.Model)
+	return g, nil
 }
 
 func NewRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
@@ -44,12 +49,13 @@ func NewRuleSet(spec rulesets.Spec, app *App) (*RuleSet, error) {
 }
 
 func (g *RuleSet) Model() *models.Group {
-	return g.spec.Model
+	// Published models and their rules are immutable. Updates replace the model.
+	return g.model.Load()
 }
 
 func (g *RuleSet) IDValue() intID.ID {
-	if g.spec.Model != nil {
-		return g.spec.Model.ID
+	if model := g.Model(); model != nil {
+		return model.ID
 	}
 	return g.spec.ID
 }
@@ -59,34 +65,72 @@ func (g *RuleSet) RuntimeKey() string {
 }
 
 func (g *RuleSet) DisplayName() string {
-	if g.spec.Model != nil {
-		return g.spec.Model.Name
+	if model := g.Model(); model != nil {
+		return model.Name
 	}
 	return g.spec.Name
 }
 
 func (g *RuleSet) RouteInterface() string {
-	if g.spec.Model != nil {
-		return g.spec.Model.Interface
+	if model := g.Model(); model != nil {
+		return model.Interface
 	}
 	return g.spec.Interface
 }
 
 func (g *RuleSet) RuleModels() []*models.Rule {
-	if g.spec.Model != nil {
-		return g.spec.Model.Rules
+	if model := g.Model(); model != nil {
+		return model.Rules
 	}
 	return g.spec.Rules
 }
 
 func (g *RuleSet) ConfiguredEnabled() bool {
-	if g.spec.Model != nil {
-		return g.spec.Model.Enable
+	if model := g.Model(); model != nil {
+		return model.Enable
 	}
 	return g.spec.Enable
 }
 
+func (g *RuleSet) updateModel(model *models.Group) error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	previous := g.Model()
+	running := g.Enabled()
+	restart := running && (previous.Interface != model.Interface || previous.Enable != model.Enable)
+	if restart {
+		if err := g.disable(); err != nil {
+			return err
+		}
+	}
+	g.model.Store(model)
+	apply := func() error {
+		if !running {
+			return nil
+		}
+		if err := g.enable(); err != nil {
+			return err
+		}
+		if g.ConfiguredEnabled() {
+			return g.sync()
+		}
+		return nil
+	}
+	if err := apply(); err != nil {
+		cleanupErr := g.disable()
+		g.model.Store(previous)
+		return errors.Join(err, cleanupErr, apply())
+	}
+	return nil
+}
+
 func (g *RuleSet) addIPv4Subnet(subnet netfilterTools.IPv4Subnet, ttl netfilterTools.IPSetTimeout) error {
+	if subnet.CIDR == 0 {
+		subnet.CIDR = 32
+	}
+	if g.permanentIPv4[subnet] {
+		ttl = nil
+	}
 	return g.ipset.AddIPv4Subnet(subnet, ttl)
 }
 
@@ -105,6 +149,12 @@ func (g *RuleSet) AddIPv4Subnet(subnet netfilterTools.IPv4Subnet, ttl netfilterT
 }
 
 func (g *RuleSet) addIPv6Subnet(subnet netfilterTools.IPv6Subnet, ttl netfilterTools.IPSetTimeout) error {
+	if subnet.CIDR == 0 {
+		subnet.CIDR = 128
+	}
+	if g.permanentIPv6[subnet] {
+		ttl = nil
+	}
 	return g.ipset.AddIPv6Subnet(subnet, ttl)
 }
 
@@ -379,17 +429,17 @@ func (g *RuleSet) sync() error {
 				domainAddresses := g.app.recordsCache.GetAddresses(domainName)
 				for _, address := range domainAddresses {
 					ttlDuration := address.Deadline.Sub(now).Seconds()
-					if ttlDuration <= 0 {
+					if ttlDuration < 1 {
 						continue
 					}
 					ttl := uint32(ttlDuration)
 					if len(address.Address) == net.IPv4len {
-						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}
+						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address), CIDR: 32}
 						if oldTTL, exists := newIPv4SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
 							newIPv4SubnetList[subnet] = &ttl
 						}
 					} else if len(address.Address) == net.IPv6len {
-						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address)}
+						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address), CIDR: 128}
 						if oldTTL, exists := newIPv6SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
 							newIPv6SubnetList[subnet] = &ttl
 						}
@@ -399,13 +449,25 @@ func (g *RuleSet) sync() error {
 		}
 	}
 
+	g.permanentIPv4 = make(map[netfilterTools.IPv4Subnet]bool)
+	g.permanentIPv6 = make(map[netfilterTools.IPv6Subnet]bool)
+	for subnet, ttl := range newIPv4SubnetList {
+		if ttl == nil {
+			g.permanentIPv4[subnet] = true
+		}
+	}
+	for subnet, ttl := range newIPv6SubnetList {
+		if ttl == nil {
+			g.permanentIPv6[subnet] = true
+		}
+	}
 	oldIPv4SubnetList, err := g.listIPv4Subnets()
 	if err != nil {
 		return fmt.Errorf("failed to get old ipset list: %w", err)
 	}
 	for subnet, newTTL := range newIPv4SubnetList {
 		if oldTTL, ok := oldIPv4SubnetList[subnet]; ok {
-			if oldTTL == nil || (newTTL != nil && *newTTL < *oldTTL) {
+			if (oldTTL == nil && newTTL == nil) || (oldTTL != nil && newTTL != nil && *newTTL < *oldTTL) {
 				continue
 			}
 		}
@@ -444,7 +506,7 @@ func (g *RuleSet) sync() error {
 	}
 	for subnet, newTTL := range newIPv6SubnetList {
 		if oldTTL, ok := oldIPv6SubnetList[subnet]; ok {
-			if oldTTL == nil || (newTTL != nil && *newTTL < *oldTTL) {
+			if (oldTTL == nil && newTTL == nil) || (oldTTL != nil && newTTL != nil && *newTTL < *oldTTL) {
 				continue
 			}
 		}

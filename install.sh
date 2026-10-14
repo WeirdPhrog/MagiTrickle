@@ -32,6 +32,12 @@ select_target() {
     esac
 }
 
+restore_config() {
+    if [ -f "$mt_tmp/config.yaml" ] && ! cmp -s "$mt_tmp/config.yaml" /opt/var/lib/magitrickle/config.yaml; then
+        cp -p "$mt_tmp/config.yaml" /opt/var/lib/magitrickle/config.yaml
+    fi
+}
+
 main() {
     PATH=/opt/bin:/opt/sbin:$PATH
     export PATH
@@ -104,12 +110,11 @@ main() {
     if "$opkg" --force-downgrade install "$mt_tmp/$package"; then
         "$opkg" flag hold magitrickle
     else
+        restore_config
         if [ -n "$installed" ]; then "$opkg" flag hold magitrickle; fi
         die 'Package installation failed. Configuration backup has been retained.'
     fi
-    if [ -f "$mt_tmp/config.yaml" ] && ! cmp -s "$mt_tmp/config.yaml" /opt/var/lib/magitrickle/config.yaml; then
-        cp -p "$mt_tmp/config.yaml" /opt/var/lib/magitrickle/config.yaml
-    fi
+    restore_config
     /opt/etc/init.d/S99magitrickle restart
     sleep 2
     /opt/etc/init.d/S99magitrickle check || die 'Package installed, but service is not running. Check the router log.'

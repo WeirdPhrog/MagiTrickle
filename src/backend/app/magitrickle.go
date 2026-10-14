@@ -13,6 +13,7 @@ import (
 )
 
 var (
+	ErrGroupNotFound        = errors.New("group not found")
 	ErrSubscriptionConflict = errors.New("subscription id conflict")
 	ErrSubscriptionNotFound = errors.New("subscription not found")
 	ErrSubscriptionInvalid  = errors.New("subscription invalid")
@@ -30,8 +31,10 @@ type Main interface {
 	UserGroups() []RuleSet
 	ClearGroups()
 	AddGroup(groupModel *models.Group) error
+	UpdateGroup(groupModel *models.Group) error
+	ReplaceGroups(groups []*models.Group) error
 	RemoveGroupByIndex(idx int)
-	RemoveGroupByID(id intID.ID) bool
+	RemoveGroupByID(id intID.ID) (bool, error)
 	SyncSubscriptionRuleSets() error
 	WithSubscriptions(fn func([]*models.Subscription))
 	ReplaceSubscriptions(subscriptions []*models.Subscription) error

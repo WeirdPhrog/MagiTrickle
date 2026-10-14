@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +22,10 @@ var colorRegExp = regexp2.MustCompile(`^#[0-9a-f]{6}$`, regexp2.IgnoreCase)
 const cfgFolderLocation = constant.AppStateDir
 const cfgFileLocation = cfgFolderLocation + "/config.yaml"
 
+// Early fork releases wrote their calendar release version into the YAML.
+// They use the same 0.x schema; accept them to recover existing installations.
+var calendarConfigVersion = regexp.MustCompile(`^20[0-9]{2}\.[0-9]{1,2}\.[0-9]{1,2}\.[0-9]+$`)
+
 func applyIfSet[T any](dst *T, src *T) {
 	if src != nil {
 		*dst = *src
@@ -27,7 +33,17 @@ func applyIfSet[T any](dst *T, src *T) {
 }
 
 func (a *App) LoadConfig() error {
-	cfgFile, err := os.ReadFile(cfgFileLocation)
+	err := a.loadConfig(cfgFileLocation)
+	a.stateMu.Lock()
+	a.configLoadErr = err
+	a.stateMu.Unlock()
+	return err
+}
+
+func (a *App) loadConfig(filename string) error {
+	a.configFileMu.Lock()
+	cfgFile, err := os.ReadFile(filename)
+	a.configFileMu.Unlock()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -40,9 +56,31 @@ func (a *App) LoadConfig() error {
 		return fmt.Errorf("failed to unmarshal config file: %w", err)
 	}
 
-	if !strings.HasPrefix(cfg.ConfigVersion, "0.") {
+	if !strings.HasPrefix(cfg.ConfigVersion, "0.") && !calendarConfigVersion.MatchString(cfg.ConfigVersion) {
 		return ErrConfigUnsupportedVersion
 	}
+	if cfg.Groups != nil {
+		if err := validateGroups(*cfg.Groups); err != nil {
+			return err
+		}
+	}
+	if cfg.Subscriptions != nil {
+		for _, sub := range *cfg.Subscriptions {
+			if sub == nil {
+				return fmt.Errorf("null subscription in config")
+			}
+			for _, rule := range sub.Rules {
+				if rule == nil {
+					return fmt.Errorf("null subscription rule in config")
+				}
+			}
+		}
+	}
+
+	a.subscriptionSyncMu.Lock()
+	defer a.subscriptionSyncMu.Unlock()
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
 
 	if cfg.App != nil {
 		if cfg.App.HTTPWeb != nil {
@@ -106,28 +144,16 @@ func (a *App) LoadConfig() error {
 		applyIfSet(&a.config.LogLevel, cfg.App.LogLevel)
 	}
 
-	a.subscriptionSyncMu.Lock()
-	defer a.subscriptionSyncMu.Unlock()
-
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-
 	if cfg.Groups != nil {
-		// отключаем старые группы и очищаем срез
-		for _, group := range a.userRuleSets {
-			_ = group.Disable()
-		}
-		a.userRuleSets = a.userRuleSets[:0]
-
 		for _, group := range *cfg.Groups {
 			if match, _ := colorRegExp.MatchString(group.Color); !match {
 				group.Color = "#ffffff"
 			} else {
 				group.Color = strings.ToLower(group.Color)
 			}
-			if err := a.addGroupLocked(group); err != nil {
-				return err
-			}
+		}
+		if err := a.replaceGroupsLocked(*cfg.Groups); err != nil {
+			return err
 		}
 	}
 
@@ -141,8 +167,17 @@ func (a *App) LoadConfig() error {
 }
 
 func (a *App) SaveConfig() error {
+	return a.saveConfig(cfgFileLocation)
+}
+
+func (a *App) saveConfig(filename string) error {
+	a.configFileMu.Lock()
+	defer a.configFileMu.Unlock()
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
+	if a.configLoadErr != nil {
+		return fmt.Errorf("refusing to overwrite an unreadable config: %w", a.configLoadErr)
+	}
 
 	groups := make([]*models.Group, 0, len(a.userRuleSets))
 	for _, rs := range a.userRuleSets {
@@ -152,7 +187,7 @@ func (a *App) SaveConfig() error {
 	}
 
 	cfg := config.Config{
-		ConfigVersion: constant.Version,
+		ConfigVersion: constant.ConfigVersion,
 		App: &config.App{
 			HTTPWeb: &config.HTTPWeb{
 				Enabled: &a.config.HTTPWeb.Enabled,
@@ -204,11 +239,30 @@ func (a *App) SaveConfig() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config file: %w", err)
 	}
-	if err := os.MkdirAll(cfgFolderLocation, os.ModePerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filename), 0700); err != nil {
 		return fmt.Errorf("failed to create config folder: %w", err)
 	}
-	if err := os.WriteFile(cfgFileLocation, out, 0600); err != nil {
+	if err := writeConfigAtomically(filename, out); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 	return nil
+}
+
+func writeConfigAtomically(filename string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(filename), ".config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), filename)
 }
