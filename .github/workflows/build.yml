@@ -134,6 +134,7 @@ jobs:
             .build/*.ipk
             .build/*.apk
           if-no-files-found: error
+          include-hidden-files: true
           compression-level: 0
 
   release:
