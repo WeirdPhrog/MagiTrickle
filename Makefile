@@ -18,7 +18,7 @@ ifeq ($(strip $(PKG_VERSION)),)
 
 	ifneq ($(strip $(TAG)),)
 		ifeq ($(strip $(COMMITS_SINCE_TAG)),0)
-			PKG_VERSION := $(shell echo "$(TAG)" | sed 's/-rev[0-9]*$$//')
+			PKG_VERSION := $(shell echo "$(TAG)" | sed -e 's/^v//' -e 's/-rev[0-9]*$$//')
 			TAG_REVISION := $(shell echo "$(TAG)" | grep -oE 'rev[0-9]+$$' | sed 's/rev//')
 			ifneq ($(strip $(TAG_REVISION)),)
 				PKG_REVISION ?= $(TAG_REVISION)
@@ -27,7 +27,7 @@ ifeq ($(strip $(PKG_VERSION)),)
 	endif
 
 	ifeq ($(strip $(PKG_VERSION)),)
-		PKG_VERSION_PRERELEASE := $(if $(TAG),$(shell echo "$(TAG)" | sed 's/-rev[0-9]*$$//' | awk -F. 'BEGIN{OFS="."} {$$NF=$$NF+1; print}'),0.0.0)
+		PKG_VERSION_PRERELEASE := $(if $(TAG),$(shell echo "$(TAG)" | sed -e 's/^v//' -e 's/-rev[0-9]*$$//' | awk -F. 'BEGIN{OFS="."} {$$NF=$$NF+1; print}'),0.0.0)
 		PRERELEASE_DATE := $(shell date -u +%Y%m%d%H%M%S)
 		COMMIT := $(shell git rev-parse --short HEAD)
 		PKG_VERSION := $(PKG_VERSION_PRERELEASE)~git$(PRERELEASE_DATE).$(COMMIT)

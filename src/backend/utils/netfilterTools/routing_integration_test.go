@@ -4,6 +4,7 @@ package netfilterTools
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -70,7 +71,13 @@ func TestRealRouting(t *testing.T) {
 			run(family.command, "-t", "mangle", "-A", "OUTPUT", "-j", "MT_ROUTE")
 			value := fmt.Sprint(mark)
 			run(family.command, "-t", "mangle", "-A", "OUTPUT", "-m", "mark", "--mark", value, "-m", "connmark", "--mark", value, "-j", "CHECK_MARK")
-			run("ping", "-c", "1", "-W", "2", family.address)
+			// A new UDP flow exercises marking without depending on an echo
+			// reply through the router's MASQUERADE rules on loopback.
+			conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP(family.address), Port: 53535})
+			check(err)
+			_, err = conn.Write([]byte("routing test"))
+			_ = conn.Close()
+			check(err)
 			listing := run(family.command, "-t", "mangle", "-L", "OUTPUT", "-nvx")
 			for _, line := range strings.Split(listing, "\n") {
 				fields := strings.Fields(line)
@@ -84,6 +91,14 @@ func TestRealRouting(t *testing.T) {
 			}
 			t.Fatalf("%s: no packet with both packet and connection mark %d\n%s", family.command, mark, listing)
 		}
+		verify(group.mark)
+		// Simulate the router firewall flushing our rules, then replay the
+		// application's desired state through the same Commit hook it uses.
+		for _, chain := range []string{"MT_ROUTE", "MT_SUBS", "MT_GROUPS", group.chainName, sub.chainName} {
+			run(family.command, "-t", "mangle", "-F", chain)
+		}
+		run(family.command, "-t", "mangle", "-D", "PREROUTING", "-j", "MT_ROUTE")
+		check(ipt.Commit())
 		verify(group.mark)
 		check(sub.deleteIPTablesRules(ipt))
 		check(sub.insertIPTablesRules(ipt))

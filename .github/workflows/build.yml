@@ -167,6 +167,14 @@ jobs:
 
           CI includes unit/race tests, real iptables legacy/nft packet tests in isolated network namespaces, installer tests, frontend checks and router package builds. Actual router/VPN validation remains necessary.
           EOF
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "MagiTrickle fork $VERSION" --notes-file /tmp/release-notes --draft
+          if gh release view "v$VERSION" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "v$VERSION" --json targetCommitish --jq .targetCommitish)" = "$GITHUB_SHA"
+            if [ "$(gh release view "v$VERSION" --json isDraft --jq .isDraft)" = false ]; then
+              echo 'Release already published; keeping its assets immutable.'
+              exit 0
+            fi
+          else
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --title "MagiTrickle fork $VERSION" --notes-file /tmp/release-notes --draft
+          fi
           gh release upload "v$VERSION" release/* --clobber
           gh release edit "v$VERSION" --draft=false --latest
