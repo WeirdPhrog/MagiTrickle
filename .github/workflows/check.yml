@@ -58,7 +58,7 @@ jobs:
       - name: Backend tests
         working-directory: ./src/backend
         run: |
-          GOOS=linux go test ./...
+          GOOS=linux go test -tags testing ./...
 
   test_frontend:
     name: Frontend testing
@@ -76,13 +76,13 @@ jobs:
           node-version: 24
 
       - name: Set up Deno
-        uses: denoland/setup-deno@v1
+        uses: denoland/setup-deno@v2
         with:
-          deno-version: v1.x
+          deno-version: v2.x
 
       - name: Install frontend dependencies
         working-directory: ./src/frontend
-        run: npm install
+        run: npm ci
 
       - name: Install Playwright browsers
         working-directory: ./src/frontend

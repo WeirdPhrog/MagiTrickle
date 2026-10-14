@@ -130,15 +130,16 @@ const withPatchedGlobal = async <T>(key: string, value: unknown, action: () => T
 };
 
 describe("GroupsStore mutations and validation", () => {
-  it("checkRulesValidityState toggles valid_rules based on invalid inputs", async () => {
-    const store = createStore();
+  it("validates stored rules even without rendered inputs and ignores unrelated DOM errors", async () => {
+    const store = createStore([makeGroup("g1", [makeRule("r1", "invalid", "")])]);
 
-    await withPatchedGlobal("document", { querySelector: () => ({}) }, () => {
+    await withPatchedGlobal("document", { querySelector: () => null }, () => {
       store.checkRulesValidityState();
       assert.strictEqual(store.valid_rules, false);
     });
 
-    await withPatchedGlobal("document", { querySelector: () => null }, () => {
+    store.data[0].rules[0].rule = "valid.example.com";
+    await withPatchedGlobal("document", { querySelector: () => ({}) }, () => {
       store.checkRulesValidityState();
       assert.strictEqual(store.valid_rules, true);
     });
