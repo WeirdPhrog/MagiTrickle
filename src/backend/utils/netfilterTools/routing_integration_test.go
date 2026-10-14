@@ -41,6 +41,11 @@ func TestRealRouting(t *testing.T) {
 		}
 	}
 	check(nh.InitRouting())
+	// The kernel's MASQUERADE target cannot choose a routable source on lo.
+	// Bypass only loopback NAT in this harness; mangle/conntrack stay real.
+	for _, command := range []string{"iptables", "ip6tables"} {
+		run(command, "-t", "nat", "-I", "POSTROUTING", "1", "-o", "lo", "-j", "ACCEPT")
+	}
 	groupSet, subSet := nh.IPSet("group"), nh.IPSet("sub-test")
 	check(groupSet.Enable())
 	check(subSet.Enable())

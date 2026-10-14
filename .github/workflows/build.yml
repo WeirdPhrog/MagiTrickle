@@ -69,15 +69,18 @@ jobs:
             sudo unshare --net /tmp/routing.test -test.run TestRealRouting -test.v
           done
       - name: Installer checks
+        if: ${{ !cancelled() }}
         run: |
           shellcheck -s sh install.sh
           python3 -m unittest discover -s tests -v
       - uses: actions/setup-node@v4
+        if: ${{ !cancelled() }}
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: src/frontend/package-lock.json
       - name: Frontend check and build
+        if: ${{ !cancelled() }}
         working-directory: src/frontend
         run: |
           npm ci
