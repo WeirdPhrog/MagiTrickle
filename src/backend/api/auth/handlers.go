@@ -33,6 +33,7 @@ func LoginHandler(app app.Main) http.HandlerFunc {
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 		req, err := utils.ReadJson[LoginRequest](r)
 		if err != nil {
 			utils.WriteError(w, http.StatusBadRequest, err.Error())
@@ -40,6 +41,10 @@ func LoginHandler(app app.Main) http.HandlerFunc {
 		}
 		if req.Login == "" || req.Password == "" {
 			utils.WriteError(w, http.StatusBadRequest, "missing credentials")
+			return
+		}
+		if len(req.Login) > maxLoginBytes || len(req.Password) > maxPasswordBytes {
+			utils.WriteError(w, http.StatusBadRequest, "credentials too long")
 			return
 		}
 

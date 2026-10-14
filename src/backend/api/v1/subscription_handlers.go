@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -184,8 +183,8 @@ func (h *Handler) SyncSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req types.SubscriptionSyncReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	req, err := utils.ReadJson[types.SubscriptionSyncReq](r)
+	if err != nil && !errors.Is(err, io.EOF) {
 		utils.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}

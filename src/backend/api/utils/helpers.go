@@ -3,10 +3,13 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"magitrickle/api/types"
 )
+
+const maxJSONBody = 32 << 20
 
 func WriteJson(w http.ResponseWriter, httpCode int, data interface{}) {
 	buf, err := json.Marshal(data)
@@ -25,9 +28,16 @@ func WriteError(w http.ResponseWriter, httpCode int, e string) {
 
 func ReadJson[T any](r *http.Request) (T, error) {
 	var req T
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		err = fmt.Errorf("failed to parse request: %w", err)
+	decoder := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxJSONBody))
+	if err := decoder.Decode(&req); err != nil {
+		return req, fmt.Errorf("failed to parse request: %w", err)
 	}
-	return req, err
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("expected a single JSON value")
+		}
+		return req, fmt.Errorf("failed to parse request: %w", err)
+	}
+	return req, nil
 }

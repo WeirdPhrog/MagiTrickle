@@ -93,8 +93,8 @@
   };
 
   let previewLines = $state<ParsedLine[]>([]);
-  // svelte-ignore non_reactive_update
-  let allParsedLines: ParsedLine[] = [];
+  let parsedCount = $state(0);
+  let parseRevision = 0;
   let stats = $state<Record<string, number>>({});
 
   const RULE_TYPE_SELECT = [{ value: "auto", label: "Auto" }, ...RULE_TYPES];
@@ -136,7 +136,7 @@
   };
 
   function handleKeydown(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (open && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       submit();
     }
@@ -180,15 +180,20 @@
   }
 
   async function parseRules(force = false) {
-    if (!force && (!import_rules_text.trim() || isParsing)) return;
+    if (!open || (!force && (!import_rules_text.trim() || isParsing))) return;
+
+    const revision = ++parseRevision;
+    const text = import_rules_text;
+    const type = selectedRuleType;
 
     isParsing = true;
     isEditing = false;
 
     await new Promise((r) => setTimeout(r, 400));
-    const lines = getParsedData(import_rules_text, selectedRuleType);
-    allParsedLines = lines;
+    if (revision !== parseRevision || !open) return;
+    const lines = getParsedData(text, type);
     previewLines = lines.slice(0, ROWS_LIMIT);
+    parsedCount = lines.length;
 
     const c: Record<string, number> = {};
     lines.forEach((l) => {
@@ -203,12 +208,12 @@
   }
 
   function submit() {
+    if (!open) return;
     triedSubmit = true;
     if (group_index === null) return;
 
-    const currentParsed = isEditing
-      ? getParsedData(import_rules_text, selectedRuleType)
-      : allParsedLines;
+    // The preview may still be parsing a previous type selection.
+    const currentParsed = getParsedData(import_rules_text, selectedRuleType);
 
     const rules: Rule[] = [];
     const seen = new Set<string>();
@@ -238,9 +243,11 @@
   }
 
   function close() {
+    parseRevision++;
+    isParsing = false;
     import_rules_text = "";
     previewLines = [];
-    allParsedLines = [];
+    parsedCount = 0;
     stats = {};
     triedSubmit = false;
     isEditing = true;
@@ -249,7 +256,10 @@
   }
 
   function onPaste() {
-    setTimeout(() => parseRules(), 50);
+    const revision = parseRevision;
+    setTimeout(() => {
+      if (revision === parseRevision) parseRules();
+    }, 50);
   }
 
   function onBlur() {
@@ -259,6 +269,8 @@
   }
 
   async function switchToEdit() {
+    parseRevision++;
+    isParsing = false;
     isEditing = true;
     await tick();
     textAreaRef?.focus();
@@ -320,7 +332,7 @@
               {/if}
             </div>
           {/each}
-          {#if allParsedLines.length > ROWS_LIMIT}
+          {#if parsedCount > ROWS_LIMIT}
             <div class="line-row ellipsis-row">
               <span class="line-text">...</span>
             </div>

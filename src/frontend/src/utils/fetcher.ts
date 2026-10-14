@@ -40,6 +40,7 @@ export async function fetcher<T>(...args: any[]): Promise<T> {
     }
     return (await res.json()) as T;
   } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
     console.error("Fetch error:", e);
 
     if ((e as Error).message !== "Unauthorized") {
@@ -56,8 +57,9 @@ export async function fetcher<T>(...args: any[]): Promise<T> {
   }
 }
 
-fetcher.get = <T>(url: string) =>
+fetcher.get = <T>(url: string, options: RequestInit = {}) =>
   fetcher<T>(url, {
+    ...options,
     method: "GET",
   });
 

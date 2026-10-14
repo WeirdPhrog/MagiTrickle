@@ -1,17 +1,17 @@
 module magitrickle
 
-go 1.23.12
+go 1.26.9
 
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.1.0
 	github.com/dlclark/regexp2 v1.11.5
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/miekg/dns v1.1.68
 	github.com/rs/zerolog v1.34.0
 	github.com/vishvananda/netlink v1.3.1
 	go.yaml.in/yaml/v2 v2.4.4
-	golang.org/x/net v0.40.0
-	golang.org/x/sys v0.33.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
 )
 
 require (

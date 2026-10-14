@@ -119,7 +119,9 @@ for (const kind of ["groups", "subscriptions"] as const) {
     await expect.poll(barGeometry).toEqual(singleSelectionGeometry);
     await bar.getByRole("button", { name: "Copy to Clipboard" }).click();
     await expect
-      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .poll(() =>
+        page.evaluate(async () => (await navigator.clipboard.readText()).replace(/\r\n/g, "\n")),
+      )
       .toBe("0.example.com\n2.example.com");
     await expect(frames).toHaveCount(3);
     await expect(page.locator(".selection-frame.selected")).toHaveCount(2);

@@ -5,13 +5,10 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import { t } from "../../../data/locale.svelte";
+  import { SUBSCRIPTIONS_STORE_CONTEXT, type SubscriptionsStore } from "../subscriptions.svelte";
 
   import { RULE_TYPES, type SubscriptionRule } from "../../../types";
-  import { VALIDATOP_MAP } from "../../../utils/rule-validators";
-  import {
-    SUBSCRIPTIONS_STORE_CONTEXT,
-    type SubscriptionsStore,
-  } from "../subscriptions.svelte";
+  import { isValidRule } from "../../../utils/rule-validators";
 
   type Props = {
     rule: SubscriptionRule;
@@ -27,9 +24,7 @@
   }
 
   function isPatternInvalid() {
-    return (
-      rule.rule.length === 0 || (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](rule.rule))
-    );
+    return !isValidRule(rule);
   }
 
   async function handleTypeChange(value: string) {
@@ -60,7 +55,7 @@
     </div>
     <div class="subscription-rule-actions">
       <Tooltip value={t(rule.enable ? "Disable Rule" : "Enable Rule")}>
-        <Switch bind:checked={rule.enable} />
+        <Switch bind:checked={rule.enable} onCheckedChange={store.markDataRevision} />
       </Tooltip>
     </div>
   </div>

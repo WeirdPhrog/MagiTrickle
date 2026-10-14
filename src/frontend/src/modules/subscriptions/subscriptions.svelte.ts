@@ -5,6 +5,7 @@ import { type Subscription, type SubscriptionRule } from "../../types";
 import { randomId } from "../../utils/defaults";
 import { overlay, toast } from "../../utils/events";
 import { fetcher } from "../../utils/fetcher";
+import { isValidRule } from "../../utils/rule-validators";
 
 export const SUBSCRIPTIONS_STORE_CONTEXT = Symbol("subscriptions-store");
 
@@ -21,8 +22,8 @@ export function validateSubscriptionUrl(value: string) {
   if (!normalized) return false;
 
   try {
-    new URL(normalized);
-    return true;
+    const url = new URL(normalized);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
   } catch {
     return false;
   }
@@ -154,7 +155,7 @@ export class SubscriptionsStore {
   #setupEffects() {
     this.#dispose = $effect.root(() => {
       $effect(() => {
-        if (typeof window === "undefined" || !this.canSave) return;
+        if (typeof window === "undefined" || !this.tracker.isDirty) return;
 
         const handleBeforeUnload = (event: BeforeUnloadEvent) => {
           event.preventDefault();
@@ -167,7 +168,8 @@ export class SubscriptionsStore {
       $effect(() => {
         this.dataRevision;
         if (typeof window === "undefined") return;
-        setTimeout(() => this.checkRulesValidityState(), 10);
+        const timer = setTimeout(() => this.checkRulesValidityState(), 10);
+        return () => clearTimeout(timer);
       });
 
       $effect(() => {
@@ -383,6 +385,7 @@ export class SubscriptionsStore {
   }
 
   saveChanges() {
+    this.checkRulesValidityState();
     if (!this.canSave) return;
     overlay.show(t("saving changes..."));
 
@@ -404,8 +407,9 @@ export class SubscriptionsStore {
   }
 
   checkRulesValidityState = () => {
-    if (typeof document === "undefined") return;
-    this.valid_rules = !document.querySelector(".subscription-rule .invalid");
+    this.valid_rules = this.data.every((subscription) =>
+      subscription.rules.every((rule) => !rule.enable || isValidRule(rule)),
+    );
   };
 
   markDataRevision = () => {

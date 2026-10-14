@@ -5,10 +5,65 @@ import {
   isValidDomain,
   isValidNamespace,
   isValidRegex,
+  isValidRule,
+  isValidSubnet,
+  isValidSubnet6,
   isValidWildcard,
 } from "../../src/utils/rule-validators";
 
 describe("Rule validator", () => {
+  it("validates full IPv4 and IPv6 syntax, including prefixes", () => {
+    for (const pattern of [
+      "::",
+      "::1",
+      "2001:db8::1/64",
+      "2001:db8:1:2:3:4:5:6/128",
+      "::ffff:192.0.2.1",
+      "::/0",
+    ]) {
+      strictEqual(isValidSubnet6(pattern), true, pattern);
+    }
+    for (const pattern of [
+      ":",
+      "1::2::3",
+      "12345::1",
+      "1:2:3:4:5:6:7",
+      "1:2:3:4:5:6:7:8::",
+      "::1/",
+      "::1/+64",
+      "::1/064",
+      "::1/129",
+      "::1/18446744073709551616",
+      "fe80::1%eth0",
+      "::ffff:999.1.1.1",
+      "::1\n",
+    ]) {
+      strictEqual(isValidSubnet6(pattern), false, pattern);
+    }
+    for (const pattern of ["0.0.0.0/0", "192.0.2.1", "255.255.255.255/32"]) {
+      strictEqual(isValidSubnet(pattern), true, pattern);
+    }
+    for (const pattern of [
+      "256.0.0.1",
+      "192.168.001.1",
+      "1.2.3.4/33",
+      "1.2.3.4/",
+      "1.2.3.4/01",
+      "1.2.3",
+      "1.2.3.4\n",
+    ]) {
+      strictEqual(isValidSubnet(pattern), false, pattern);
+    }
+  });
+
+  it("rejects empty rules and unknown types without inherited property lookups", () => {
+    for (const type of ["unknown", "toString", "__proto__"]) {
+      strictEqual(isValidRule({ type, rule: "example.com" }), false);
+    }
+    strictEqual(isValidRule({ type: "regex", rule: "" }), false);
+    strictEqual(isValidRule({ type: "subnet6", rule: "1::2::3" }), false);
+    strictEqual(isValidRule({ type: "domain", rule: "example.com" }), true);
+  });
   it("should be valid regexp", () => {
     strictEqual(isValidRegex("^[a-zA-Z0-9]+$"), true);
     strictEqual(isValidRegex("^[a-zA-Z0-9+$"), false);

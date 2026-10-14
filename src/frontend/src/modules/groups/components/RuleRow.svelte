@@ -6,17 +6,17 @@
   import Switch from "../../../components/ui/Switch.svelte";
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import { t } from "../../../data/locale.svelte";
-
-  import { Delete, Grip, TriangleAlert } from "../../../components/ui/icons";
-  import { dnd_state, draggable, droppable } from "../../../lib/dnd";
-  import { RULE_TYPES, type Rule } from "../../../types";
-  import { VALIDATOP_MAP } from "../../../utils/rule-validators";
   import {
     GROUPS_STORE_CONTEXT,
     RULE_SEARCH_MATCH_NAME,
     RULE_SEARCH_MATCH_PATTERN,
     type GroupsStore,
   } from "../groups.svelte";
+
+  import { Delete, Grip, TriangleAlert } from "../../../components/ui/icons";
+  import { dnd_state, draggable, droppable } from "../../../lib/dnd";
+  import { RULE_TYPES, type Rule } from "../../../types";
+  import { isValidRule } from "../../../utils/rule-validators";
 
   type Props = {
     rule: Rule;
@@ -45,17 +45,7 @@
     throw new Error("GroupsStore context is missing");
   }
 
-  let input: HTMLInputElement;
-
   function patternValidation() {
-    if (
-      input.value.length === 0 ||
-      (VALIDATOP_MAP[rule.type] && !VALIDATOP_MAP[rule.type](input.value))
-    ) {
-      input.classList.add("invalid");
-    } else {
-      input.classList.remove("invalid");
-    }
     store.markDataRevision();
   }
 
@@ -240,9 +230,9 @@
           type="text"
           placeholder={t("rule pattern...")}
           class="table-input pattern-input"
+          class:invalid={!isValidRule(rule)}
           class:search-text-hidden={hasPatternSearchHighlight}
           bind:value={rule.rule}
-          bind:this={input}
           oninput={patternValidation}
           onfocusout={patternValidation}
         />

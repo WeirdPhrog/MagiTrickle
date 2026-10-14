@@ -11,6 +11,7 @@ import (
 
 const fetchTimeout = 15 * time.Second
 const maxFetchRedirects = 5
+const maxListBytes = 16 << 20
 
 func FetchList(rawURL string) (string, error) {
 	return FetchListContext(context.Background(), rawURL)
@@ -94,9 +95,15 @@ func fetchListAttempt(ctx context.Context, rawURL, interfaceName string) (string
 			return "", fmt.Errorf("bad response status: %d", resp.StatusCode)
 		}
 
-		data, err := io.ReadAll(resp.Body)
+		if resp.ContentLength > maxListBytes {
+			return "", fmt.Errorf("subscription exceeds 16 MiB limit")
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxListBytes+1))
 		if err != nil {
 			return "", err
+		}
+		if len(data) > maxListBytes {
+			return "", fmt.Errorf("subscription exceeds 16 MiB limit")
 		}
 		return string(data), nil
 	}

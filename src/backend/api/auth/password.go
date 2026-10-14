@@ -9,13 +9,18 @@ import (
 )
 
 const (
-	jwtIssuer = "magitrickle"
-	jwtYears  = 20
+	jwtIssuer        = "magitrickle"
+	jwtYears         = 20
+	maxLoginBytes    = 256
+	maxPasswordBytes = 1024
 )
 
 func Authenticate(login, password string) (string, error) {
 	if login == "" || password == "" {
 		return "", errors.New("missing credentials")
+	}
+	if len(login) > maxLoginBytes || len(password) > maxPasswordBytes {
+		return "", errors.New("credentials too long")
 	}
 	passwordHash, err := loadPasswordHash(login)
 	if err != nil {
@@ -28,6 +33,10 @@ func Authenticate(login, password string) (string, error) {
 }
 
 func verifyPassword(password, passwordHash string) bool {
+	// SHA-crypt's initial password expansion is quadratic in the key length.
+	if len(password) > maxPasswordBytes {
+		return false
+	}
 	computed, err := cryptPassword(password, passwordHash)
 	if err != nil {
 		return false

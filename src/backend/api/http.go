@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"magitrickle/api/auth"
 	"magitrickle/api/utils"
@@ -37,9 +38,27 @@ func SetupHTTP(a app.Main, errChan chan error) (*http.Server, error) {
 		return nil, fmt.Errorf("error while listening HTTP %s: %v", addr, err)
 	}
 
-	// Создаем основной роутер и монтируем API-роутер, а также статику
+	srv := &http.Server{
+		Handler:           newHTTPHandler(a),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	log.Info().Msgf("Starting HTTP server on %s", addr)
+	go func() {
+		if e := srv.Serve(listener); e != nil && e != http.ErrServerClosed {
+			errChan <- fmt.Errorf("failed to serve HTTP: %v", e)
+		}
+		listener.Close()
+	}()
+	return srv, nil
+}
+
+func newHTTPHandler(a app.Main) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(browserProtection)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -105,14 +124,5 @@ func SetupHTTP(a app.Main, errChan chan error) (*http.Server, error) {
 		w.Write(fileData)
 	})
 
-	srv := &http.Server{Handler: r}
-
-	log.Info().Msgf("Starting HTTP server on %s", addr)
-	go func() {
-		if e := srv.Serve(listener); e != nil && e != http.ErrServerClosed {
-			errChan <- fmt.Errorf("failed to serve HTTP: %v", e)
-		}
-		listener.Close()
-	}()
-	return srv, nil
+	return r
 }

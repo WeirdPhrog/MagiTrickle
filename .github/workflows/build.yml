@@ -59,6 +59,9 @@ jobs:
       - name: Large rule list benchmarks
         working-directory: src/backend
         run: go test -tags testing -run '^$' -bench 'Benchmark(DNSRuleScan|BulkRuleConversion)$' -benchtime=100ms . ./api/v1
+      - name: Go dependency vulnerability scan
+        working-directory: src/backend
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -tags=testing ./...
       - name: Install kernel test and shell lint tools
         run: |
           sudo apt-get update
@@ -95,6 +98,7 @@ jobs:
         working-directory: src/frontend
         run: |
           npm ci
+          npm audit --audit-level=low
           npm run check
           npm run build
       - uses: denoland/setup-deno@v2
@@ -193,11 +197,11 @@ jobs:
           cat > /tmp/release-notes <<'EOF'
           Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
 
-          Runtime fixes: restore IPv4/IPv6 routes after VPN/interface recreation even when the gateway is unchanged; keep zero and oversized DNS TTLs finite in ipset; discard stale DNS replies with the wrong transaction ID on reused connections.
+          Security fixes: reject cross-origin browser requests to the API, prevent foreign-page framing, bound login/password and JSON input sizes, cap decompressed subscription lists at 16 MiB, and stop pathological regex backtracking with a matching timeout.
 
-          Large lists: DNS matching skips IP/subnet-only rules, bulk rule edits use an ID index, and overlapping CNAME rules no longer repeat the same ipset updates. Rule order and Groups priority are preserved.
+          Frontend fixes: validate rules beyond the visible page, preserve the unsaved-change warning for invalid edits, reject malformed IPv4/IPv6 addresses, cancel stale subscription previews, and use the current rule type when importing. Broken or blocked browser storage no longer prevents WebUI startup.
 
-          Subscriptions retain one shared download-interface setting with fallback to the system route. The download selector no longer offers the virtual blackhole target. IPv6 addresses in logs use valid notation.
+          Updated the Go toolchain to 1.26.9 and patched Go/frontend dependencies. CI now runs govulncheck and npm audit in addition to regression tests. Subscriptions retain the shared download-interface setting and system-route fallback; Groups retain priority over Subscriptions.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 

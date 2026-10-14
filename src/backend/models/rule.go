@@ -3,6 +3,7 @@ package models
 import (
 	"strings"
 	"sync"
+	"time"
 
 	"magitrickle/utils/intID"
 
@@ -49,6 +50,8 @@ func (d *Rule) Compile() error {
 				d.compiled = func(string) bool { return false }
 				return
 			}
+			// User/subscription regexes may backtrack exponentially on DNS names.
+			re.MatchTimeout = 100 * time.Millisecond
 			d.compiled = func(s string) bool {
 				ok, _ := re.MatchString(s)
 				return ok

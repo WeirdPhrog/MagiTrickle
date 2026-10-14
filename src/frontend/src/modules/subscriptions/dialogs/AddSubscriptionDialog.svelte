@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
@@ -31,6 +31,8 @@
   let isLoading = $state(false);
   let error = $state<string | null>(null);
   let fetchError = $state(false);
+  let pendingRequest: AbortController | null = null;
+  onDestroy(() => pendingRequest?.abort());
 
   let typeBreakdown = $derived.by(() => {
     const counts: Record<string, number> = {};
@@ -44,6 +46,8 @@
   });
 
   function reset() {
+    pendingRequest?.abort();
+    pendingRequest = null;
     step = 1;
     url = "";
     name = "";
@@ -70,6 +74,7 @@
   );
   let isErrorVisible = $derived(isDuplicate || fetchError);
   async function handleNext() {
+    if (!open || isLoading) return;
     if (!normalizedUrl || !isValidUrl) {
       error = t("Invalid URL");
       fetchError = true;
@@ -80,19 +85,24 @@
     }
 
     isLoading = true;
+    const request = new AbortController();
+    pendingRequest = request;
     error = null;
     fetchError = false;
     try {
       url = normalizedUrl;
       const res = await fetcher.get<{ rules: SubscriptionRule[] }>(
         `/subscriptions/rules?url=${encodeURIComponent(normalizedUrl)}`,
+        { signal: request.signal },
       );
+      if (pendingRequest !== request) return;
       rules = res.rules;
       step = 2;
       if (!selectedInterface) {
         selectedInterface = interfaces.list[0]?.id || "";
       }
     } catch (e) {
+      if (pendingRequest !== request || request.signal.aborted) return;
       console.error(e);
       error = t("Failed to fetch rules");
       fetchError = true;
@@ -100,11 +110,15 @@
         fetchError = false;
       }, 3000);
     } finally {
-      isLoading = false;
+      if (pendingRequest === request) {
+        pendingRequest = null;
+        isLoading = false;
+      }
     }
   }
 
   function handleAdd() {
+    if (!open || isLoading || !isValidUrl || step !== 2 || rules.length === 0) return;
     dispatch("add", {
       url: normalizedUrl,
       name,
@@ -116,6 +130,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (!open) return;
     if (e.key === "Enter") {
       e.preventDefault();
       if (step === 1) {
@@ -146,6 +161,7 @@
             id="sub-url"
             type="text"
             bind:value={url}
+            disabled={isLoading}
             placeholder="https://example.com/list.txt"
             class:invalid={url !== "" && !isValidUrl}
             onkeydown={handleKeydown}
