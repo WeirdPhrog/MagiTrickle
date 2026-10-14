@@ -30,6 +30,15 @@ func trimFQDN(name string) string {
 	return name
 }
 
+// ipset interprets timeout=0 as permanent, so round a live fractional TTL up.
+func remainingTTL(deadline, now time.Time) uint32 {
+	duration := deadline.Sub(now)
+	if duration <= 0 {
+		return 0
+	}
+	return uint32((duration + time.Second - 1) / time.Second)
+}
+
 func (a *App) startDNSListeners(ctx context.Context, errChan chan error) {
 	go func() {
 		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", a.Config().DNSProxy.Host.Address, a.Config().DNSProxy.Host.Port))
@@ -334,11 +343,10 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 					Msg("added alias")
 
 				for _, address := range addresses {
-					ttlDuration := address.Deadline.Sub(now).Seconds()
-					if ttlDuration < 1 {
+					ttl := remainingTTL(address.Deadline, now)
+					if ttl == 0 {
 						continue
 					}
-					ttl := uint32(ttlDuration)
 
 					if len(address.Address) == net.IPv4len {
 						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address), CIDR: 32}

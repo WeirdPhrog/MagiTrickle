@@ -428,11 +428,10 @@ func (g *RuleSet) sync() error {
 				}
 				domainAddresses := g.app.recordsCache.GetAddresses(domainName)
 				for _, address := range domainAddresses {
-					ttlDuration := address.Deadline.Sub(now).Seconds()
-					if ttlDuration < 1 {
+					ttl := remainingTTL(address.Deadline, now)
+					if ttl == 0 {
 						continue
 					}
-					ttl := uint32(ttlDuration)
 					if len(address.Address) == net.IPv4len {
 						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address), CIDR: 32}
 						if oldTTL, exists := newIPv4SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {

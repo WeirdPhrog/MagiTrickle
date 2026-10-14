@@ -30,16 +30,20 @@ const makeGroup = (id: string, rules: Rule[] = []): Group => ({
 
 describe("Groups data API", () => {
   it("sorts and restores very large rule lists without argument overflow", () => {
-    const group = makeGroup("large", Array.from({ length: 150000 }, (_, i) =>
-      makeRule(String(i).padStart(6, "0")),
-    ));
+    const group = makeGroup(
+      "large",
+      Array.from({ length: 150000 }, (_, i) => makeRule(String(i).padStart(6, "0"))),
+    );
     const originalArray = group.rules;
     const originalIds = group.rules.map((rule) => rule.id);
     sortGroupRules(group, "name", "desc");
     assert.equal(group.rules[0].id, "149999");
     assert.equal(restoreGroupRulesOrder(group, originalIds), true);
     assert.equal(group.rules, originalArray);
-    assert.deepStrictEqual(group.rules.map((rule) => rule.id), originalIds);
+    assert.deepStrictEqual(
+      group.rules.map((rule) => rule.id),
+      originalIds,
+    );
   });
 
   it("prepends groups in source order and updates open state", async () => {
