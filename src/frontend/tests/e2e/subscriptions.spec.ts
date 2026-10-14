@@ -108,7 +108,7 @@ test.describe("Subscriptions", () => {
       makeSubscription("a1b2c3d4", "https://one.example/list.txt"),
       makeSubscription("b1c2d3e4", "https://two.example/list.txt"),
     ]);
-    const select = page.getByRole("combobox", { name: "Download interface" });
+    const select = page.getByRole("button", { name: "Download interface", exact: true });
     await expect(select).toHaveCount(1);
     await expect(select).toContainText("System default");
     await select.click();
@@ -132,7 +132,7 @@ test.describe("Subscriptions", () => {
   }) => {
     const state = await setupSubscriptions(page, []);
     state.failSettingsSave = true;
-    const select = page.getByRole("combobox", { name: "Download interface" });
+    const select = page.getByRole("button", { name: "Download interface", exact: true });
     await expect(select).toBeEnabled();
     await select.click();
     await page.getByRole("option", { name: "wg0 My VPN" }).click();
@@ -153,7 +153,7 @@ test.describe("Subscriptions", () => {
     );
     await page.reload();
     await page.getByRole("tab", { name: "Subscriptions" }).click();
-    const select = page.getByRole("combobox", { name: "Download interface" });
+    const select = page.getByRole("button", { name: "Download interface", exact: true });
     await expect(select).toBeDisabled();
     failLoad = false;
     await page.getByRole("button", { name: "Retry", exact: true }).click();
