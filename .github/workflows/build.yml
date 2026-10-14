@@ -97,6 +97,13 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: src/frontend
         run: deno test --no-check --unstable-sloppy-imports tests/unit
+      - name: Browser regression tests
+        if: ${{ !cancelled() }}
+        working-directory: src/frontend
+        timeout-minutes: 15
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:e2e -- --retries=0 --max-failures=5
 
   build:
     needs: [prepare, test]
@@ -177,6 +184,8 @@ jobs:
         run: |
           cat > /tmp/release-notes <<'EOF'
           Groups override overlapping Subscriptions for IPv4 and IPv6, including after subscription refresh and group edits.
+
+          The audit fixes config reloads after calendar-version releases, atomic saving, group/regex edits, DNS/ipset synchronization and shutdown races. Existing calendar-version configs are recovered automatically. Installer failure handling preserves the previous config.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 

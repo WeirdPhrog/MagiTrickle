@@ -119,7 +119,7 @@ export async function prependRules(
 
 export function sortGroupRules(group: Group, field: SortField, direction: SortDirection) {
   const sorted = sortRules(group.rules, field, direction);
-  group.rules.splice(0, group.rules.length, ...sorted);
+  replaceRules(group.rules, sorted);
 }
 
 export function restoreGroupRulesOrder(group: Group, ruleIds: string[]) {
@@ -133,8 +133,16 @@ export function restoreGroupRulesOrder(group: Group, ruleIds: string[]) {
   const orderedRuleIds = new Set(orderedRules.map((rule) => rule.id));
   const remainingRules = group.rules.filter((rule) => !orderedRuleIds.has(rule.id));
 
-  group.rules.splice(0, group.rules.length, ...orderedRules, ...remainingRules);
+  replaceRules(group.rules, orderedRules.concat(remainingRules));
   return true;
+}
+
+function replaceRules(target: Rule[], rules: Rule[]) {
+  // Keep the tracked array, without exceeding JavaScript's argument limit.
+  target.splice(0, target.length);
+  for (let i = 0; i < rules.length; i += 300) {
+    target.push(...rules.slice(i, i + 300));
+  }
 }
 
 export function toConfigPayload(groups: Group[]) {

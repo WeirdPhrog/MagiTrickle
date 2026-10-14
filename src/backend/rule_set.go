@@ -452,12 +452,12 @@ func (g *RuleSet) sync() error {
 	g.permanentIPv4 = make(map[netfilterTools.IPv4Subnet]bool)
 	g.permanentIPv6 = make(map[netfilterTools.IPv6Subnet]bool)
 	for subnet, ttl := range newIPv4SubnetList {
-		if ttl == nil {
+		if ttl == nil && subnet.CIDR == 32 {
 			g.permanentIPv4[subnet] = true
 		}
 	}
 	for subnet, ttl := range newIPv6SubnetList {
-		if ttl == nil {
+		if ttl == nil && subnet.CIDR == 128 {
 			g.permanentIPv6[subnet] = true
 		}
 	}
@@ -465,6 +465,7 @@ func (g *RuleSet) sync() error {
 	if err != nil {
 		return fmt.Errorf("failed to get old ipset list: %w", err)
 	}
+	var syncErrors []error
 	for subnet, newTTL := range newIPv4SubnetList {
 		if oldTTL, ok := oldIPv4SubnetList[subnet]; ok {
 			if (oldTTL == nil && newTTL == nil) || (oldTTL != nil && newTTL != nil && *newTTL < *oldTTL) {
@@ -473,6 +474,7 @@ func (g *RuleSet) sync() error {
 		}
 
 		if err := g.addIPv4Subnet(subnet, newTTL); err != nil {
+			syncErrors = append(syncErrors, err)
 			log.Error().
 				Err(err).
 				Str("subnet", subnet.String()).
@@ -489,6 +491,7 @@ func (g *RuleSet) sync() error {
 		}
 
 		if err := g.delIPv4Subnet(subnet); err != nil {
+			syncErrors = append(syncErrors, err)
 			log.Error().
 				Err(err).
 				Str("subnet", subnet.String()).
@@ -512,6 +515,7 @@ func (g *RuleSet) sync() error {
 		}
 
 		if err := g.addIPv6Subnet(subnet, newTTL); err != nil {
+			syncErrors = append(syncErrors, err)
 			log.Error().
 				Err(err).
 				Str("subnet", subnet.String()).
@@ -528,6 +532,7 @@ func (g *RuleSet) sync() error {
 		}
 
 		if err := g.delIPv6Subnet(subnet); err != nil {
+			syncErrors = append(syncErrors, err)
 			log.Error().
 				Err(err).
 				Str("subnet", subnet.String()).
@@ -539,7 +544,7 @@ func (g *RuleSet) sync() error {
 		}
 	}
 
-	return nil
+	return errors.Join(syncErrors...)
 }
 
 func (g *RuleSet) Sync() error {
