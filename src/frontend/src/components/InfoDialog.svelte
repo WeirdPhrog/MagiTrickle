@@ -3,7 +3,7 @@
   import GenericDialog from "./ui/GenericDialog.svelte";
   import GenericIcon from "./ui/GenericIcon.svelte";
 
-  import { Bug, Gitlab, Globe, Sponsorship } from "./ui/icons";
+  import { Bug, Github, Gitlab, Globe, Sponsorship } from "./ui/icons";
 
   const version = import.meta.env.VITE_PKG_VERSION || "0.0.0";
 
@@ -17,6 +17,20 @@
 <GenericDialog {open} title={t("About")} on:close={() => (open = false)} maxWidth={420}>
   <div slot="body">
     <div class="container">
+      <div class="block">
+        <div class="icon">
+          <Github size={22} />
+        </div>
+        <div class="text">
+          {t("GitHub Fork")}
+          <a
+            target="_blank"
+            rel="noopener noreferrer"
+            href="https://github.com/WeirdPhrog/MagiTrickle"
+            >https://github.com/WeirdPhrog/MagiTrickle</a
+          >
+        </div>
+      </div>
       <div class="block">
         <div class="icon">
           <Globe size={22} />

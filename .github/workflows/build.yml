@@ -195,9 +195,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cat > /tmp/release-notes <<'EOF'
-          Routing now checks each ipset once instead of twice during packet marking, enters only matching rule-set chains, and checks reply direction once before all rule sets. Groups still override Subscriptions; ordering within each tier and per-packet re-evaluation of existing flows are preserved. No connection-route cache was introduced.
-
-          Regression tests cover every overlap combination of multiple groups/subscriptions, blackholes, foreign packet/connection marks, rule refreshes, and reduced lookup counts. Real IPv4/IPv6 tests on both iptables backends now also change set membership during an open bidirectional UDP flow and verify reply marks. Fewer lookups do not imply a measured throughput gain on a physical router.
+          The WebUI About dialog now includes a direct link to the WeirdPhrog/MagiTrickle GitHub fork, with English and Russian labels. The link is available from both the main interface and the sign-in page.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 
