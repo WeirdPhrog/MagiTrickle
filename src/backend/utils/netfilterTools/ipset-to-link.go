@@ -216,16 +216,18 @@ func (r *IPSetToLink) deleteIPRule() error {
 		err := netlink.RuleDel(r.ip4Rule)
 		if err != nil && !errors.Is(err, unix.ENOENT) {
 			errs = append(errs, fmt.Errorf("error while deleting rule: %w", err))
+		} else {
+			r.ip4Rule = nil
 		}
-		r.ip4Rule = nil
 	}
 
 	if r.ip6Rule != nil {
 		err := netlink.RuleDel(r.ip6Rule)
 		if err != nil && !errors.Is(err, unix.ENOENT) {
 			errs = append(errs, fmt.Errorf("error while deleting rule: %w", err))
+		} else {
+			r.ip6Rule = nil
 		}
-		r.ip6Rule = nil
 	}
 
 	return errors.Join(errs...)
@@ -349,6 +351,7 @@ func (r *IPSetToLink) deleteIPRoute() error {
 		err := netlink.RouteDel(r.ip4Route[i])
 		if err != nil && !errors.Is(err, unix.ESRCH) {
 			errs = append(errs, fmt.Errorf("error while deleting route: %w", err))
+			continue
 		}
 		r.ip4Route[i] = nil
 	}
@@ -360,6 +363,7 @@ func (r *IPSetToLink) deleteIPRoute() error {
 		err := netlink.RouteDel(r.ip6Route[i])
 		if err != nil && !errors.Is(err, unix.ESRCH) {
 			errs = append(errs, fmt.Errorf("error while deleting route: %w", err))
+			continue
 		}
 		r.ip6Route[i] = nil
 	}

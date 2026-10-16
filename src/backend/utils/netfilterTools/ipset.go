@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
@@ -48,6 +49,32 @@ type IPSet struct {
 	locker  sync.Mutex
 
 	ipsetName string
+	deadlines map[string]time.Time
+	nextSweep time.Time
+}
+
+func (r *IPSet) longerTimeout(key string, timeout IPSetTimeout) bool {
+	now := time.Now()
+	if !now.Before(r.nextSweep) {
+		for key, deadline := range r.deadlines {
+			if !now.Before(deadline) {
+				delete(r.deadlines, key)
+			}
+		}
+		r.nextSweep = now.Add(time.Minute)
+	}
+	return timeout != nil && *timeout != 0 && r.deadlines[key].After(now.Add(time.Duration(*timeout)*time.Second))
+}
+
+func (r *IPSet) rememberTimeout(key string, timeout IPSetTimeout, addedAt time.Time) {
+	if timeout == nil || *timeout == 0 {
+		delete(r.deadlines, key)
+		return
+	}
+	if r.deadlines == nil {
+		r.deadlines = make(map[string]time.Time)
+	}
+	r.deadlines[key] = addedAt.Add(time.Duration(*timeout) * time.Second)
 }
 
 func (r *IPSet) AddIPv4Subnet(subnet IPv4Subnet, timeout IPSetTimeout) error {
@@ -57,11 +84,16 @@ func (r *IPSet) AddIPv4Subnet(subnet IPv4Subnet, timeout IPSetTimeout) error {
 	if !r.enabled.Load() {
 		return nil
 	}
+	key := subnet.String()
+	if r.longerTimeout(key, timeout) {
+		return nil
+	}
 
 	if timeout == nil {
 		timeout = zeroTimeout
 	}
 
+	addedAt := time.Now()
 	err := netlink.IpsetAdd(r.ipsetName+"_4", &netlink.IPSetEntry{
 		IP:      subnet.Address[:],
 		CIDR:    subnet.CIDR,
@@ -72,6 +104,7 @@ func (r *IPSet) AddIPv4Subnet(subnet IPv4Subnet, timeout IPSetTimeout) error {
 		return fmt.Errorf("failed to add address: %w", err)
 	}
 
+	r.rememberTimeout(key, timeout, addedAt)
 	return nil
 }
 
@@ -82,11 +115,16 @@ func (r *IPSet) AddIPv6Subnet(subnet IPv6Subnet, timeout IPSetTimeout) error {
 	if !r.enabled.Load() {
 		return nil
 	}
+	key := subnet.String()
+	if r.longerTimeout(key, timeout) {
+		return nil
+	}
 
 	if timeout == nil {
 		timeout = zeroTimeout
 	}
 
+	addedAt := time.Now()
 	err := netlink.IpsetAdd(r.ipsetName+"_6", &netlink.IPSetEntry{
 		IP:      subnet.Address[:],
 		CIDR:    subnet.CIDR,
@@ -97,6 +135,7 @@ func (r *IPSet) AddIPv6Subnet(subnet IPv6Subnet, timeout IPSetTimeout) error {
 		return fmt.Errorf("failed to add address: %w", err)
 	}
 
+	r.rememberTimeout(key, timeout, addedAt)
 	return nil
 }
 
@@ -116,6 +155,7 @@ func (r *IPSet) DelIPv4Subnet(subnet IPv4Subnet) error {
 		return fmt.Errorf("failed to delete address: %w", err)
 	}
 
+	delete(r.deadlines, subnet.String())
 	return nil
 }
 
@@ -135,6 +175,7 @@ func (r *IPSet) DelIPv6Subnet(subnet IPv6Subnet) error {
 		return fmt.Errorf("failed to delete address: %w", err)
 	}
 
+	delete(r.deadlines, subnet.String())
 	return nil
 }
 
@@ -211,6 +252,7 @@ func (r *IPSet) Replace(v4 map[IPv4Subnet]IPSetTimeout, v6 map[IPv6Subnet]IPSetT
 		return fmt.Errorf("ipset is disabled")
 	}
 	tmp4, tmp6 := r.ipsetName+"_t4", r.ipsetName+"_t6"
+	preparedAt := time.Now()
 	for _, name := range []string{tmp4, tmp6} {
 		if err := netlink.IpsetDestroy(name); err != nil && !os.IsNotExist(err) {
 			return err
@@ -221,8 +263,9 @@ func (r *IPSet) Replace(v4 map[IPv4Subnet]IPSetTimeout, v6 map[IPv6Subnet]IPSetT
 	create := func(name string, family uint8, count int) error {
 		// maxelem is a limit, not an up-front allocation. Leave room for DNS
 		// hosts and allow subscriptions larger than ipset's 65536 default.
+		timeout := uint32(300)
 		return netlink.IpsetCreate(name, "hash:net", netlink.IpsetCreateOptions{
-			Timeout: new(uint32(300)), Family: family,
+			Timeout: &timeout, Family: family,
 			MaxElements: uint32(max(65536, count+count/4)),
 		})
 	}
@@ -253,6 +296,17 @@ func (r *IPSet) Replace(v4 map[IPv4Subnet]IPSetTimeout, v6 map[IPv6Subnet]IPSetT
 	}
 	if err := netlink.IpsetSwap(tmp6, r.ipsetName+"_6"); err != nil {
 		return errors.Join(err, netlink.IpsetSwap(tmp4, r.ipsetName+"_4"))
+	}
+	r.deadlines = make(map[string]time.Time)
+	for subnet, ttl := range v4 {
+		if ttl != nil && *ttl != 0 {
+			r.deadlines[subnet.String()] = preparedAt.Add(time.Duration(*ttl) * time.Second)
+		}
+	}
+	for subnet, ttl := range v6 {
+		if ttl != nil && *ttl != 0 {
+			r.deadlines[subnet.String()] = preparedAt.Add(time.Duration(*ttl) * time.Second)
+		}
 	}
 	return nil
 }
@@ -307,6 +361,7 @@ func (r *IPSet) enable() error {
 	if err != nil {
 		return err
 	}
+	r.deadlines = nil
 
 	return nil
 }
@@ -327,9 +382,12 @@ func (r *IPSet) disable() error {
 	if !r.enabled.Load() {
 		return nil
 	}
-	defer r.enabled.Store(false)
-
-	return r.ipsetDestroy()
+	if err := r.ipsetDestroy(); err != nil {
+		return err
+	}
+	r.enabled.Store(false)
+	r.deadlines = nil
+	return nil
 }
 
 func (r *IPSet) Disable() error {

@@ -25,6 +25,9 @@ type Records struct {
 	// Раздельные map'ы вместо map[string]interface{}
 	addresses map[string][]*Address
 	aliases   map[string]*Alias
+	// HTTPS/SVCB may advertise several targets for the same owner.
+	bindings        map[string]map[string]time.Time
+	reverseBindings map[string]map[string]time.Time
 
 	// Обратный индекс: alias → []domains, которые на него ссылаются
 	reverseAliases map[string][]string
@@ -80,7 +83,10 @@ func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
 	addresses := r.addresses[domainName]
 	for _, aRecord := range addresses {
 		if bytes.Equal(aRecord.Address, addr) {
-			aRecord.Deadline = deadline
+			// Another client may still use an earlier answer with a longer TTL.
+			if deadline.After(aRecord.Deadline) {
+				aRecord.Deadline = deadline
+			}
 			return
 		}
 	}
@@ -89,6 +95,26 @@ func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
 		Address:  bytes.Clone(addr),
 		Deadline: deadline,
 	})
+}
+
+func (r *Records) AddBinding(owner, target string, ttl uint32) {
+	owner, target = strings.ToLower(owner), strings.ToLower(target)
+	if owner == target || target == "" || target == "." {
+		return
+	}
+	r.locker.Lock()
+	defer r.locker.Unlock()
+	if r.bindings[owner] == nil {
+		r.bindings[owner] = make(map[string]time.Time)
+	}
+	deadline := time.Now().Add(time.Duration(ttl) * time.Second)
+	if deadline.After(r.bindings[owner][target]) {
+		r.bindings[owner][target] = deadline
+		if r.reverseBindings[target] == nil {
+			r.reverseBindings[target] = make(map[string]time.Time)
+		}
+		r.reverseBindings[target][owner] = deadline
+	}
 }
 
 // GetAliases возвращает все домены, которые ссылаются на данный (прямо или транзитивно)
@@ -118,6 +144,16 @@ func (r *Records) GetAliases(domainName string) []string {
 			result = append(result, pointing)
 			queue = append(queue, pointing)
 		}
+		for owner, deadline := range r.reverseBindings[current] {
+			if !now.Before(deadline) {
+				continue
+			}
+			if _, ok := seen[owner]; !ok {
+				seen[owner] = struct{}{}
+				result = append(result, owner)
+				queue = append(queue, owner)
+			}
+		}
 	}
 
 	return result
@@ -132,7 +168,16 @@ func (r *Records) GetAddresses(domainName string) []*Address {
 	seen := make(map[string]struct{})
 	seen[domainName] = struct{}{}
 
-	for {
+	queue := []string{domainName}
+	var result []*Address
+	for len(queue) > 0 {
+		domainName, queue = queue[0], queue[1:]
+		for target, deadline := range r.bindings[domainName] {
+			if _, ok := seen[target]; !ok && now.Before(deadline) {
+				seen[target] = struct{}{}
+				queue = append(queue, target)
+			}
+		}
 		if addresses, ok := r.addresses[domainName]; ok && len(addresses) > 0 {
 			// Фильтруем просроченные адреса (только чтение, без удаления)
 			var valid []*Address
@@ -143,22 +188,24 @@ func (r *Records) GetAddresses(domainName string) []*Address {
 				}
 			}
 			if len(valid) > 0 {
-				return valid
+				result = append(result, valid...)
+				continue
 			}
 		}
 
 		alias, ok := r.aliases[domainName]
 		if !ok || now.After(alias.Deadline) {
-			return nil
+			continue
 		}
 
 		// Защита от циклов
 		if _, ok := seen[alias.Alias]; ok {
-			return nil
+			continue
 		}
 		seen[alias.Alias] = struct{}{}
-		domainName = alias.Alias
+		queue = append(queue, alias.Alias)
 	}
+	return result
 }
 
 func (r *Records) ListKnownDomains() []string {
@@ -173,6 +220,9 @@ func (r *Records) ListKnownDomains() []string {
 	}
 
 	for name := range r.aliases {
+		domains[name] = struct{}{}
+	}
+	for name := range r.bindings {
 		domains[name] = struct{}{}
 	}
 
@@ -213,6 +263,20 @@ func (r *Records) cleanupRecords() {
 			delete(r.aliases, name)
 		}
 	}
+	for owner, targets := range r.bindings {
+		for target, deadline := range targets {
+			if !now.Before(deadline) {
+				delete(targets, target)
+				delete(r.reverseBindings[target], owner)
+				if len(r.reverseBindings[target]) == 0 {
+					delete(r.reverseBindings, target)
+				}
+			}
+		}
+		if len(targets) == 0 {
+			delete(r.bindings, owner)
+		}
+	}
 }
 
 // StartCleanup запускает фоновую очистку с заданным интервалом
@@ -234,8 +298,10 @@ func (r *Records) StartCleanup(ctx context.Context, interval time.Duration) {
 
 func New() *Records {
 	return &Records{
-		addresses:      make(map[string][]*Address),
-		aliases:        make(map[string]*Alias),
-		reverseAliases: make(map[string][]string),
+		addresses:       make(map[string][]*Address),
+		aliases:         make(map[string]*Alias),
+		bindings:        make(map[string]map[string]time.Time),
+		reverseBindings: make(map[string]map[string]time.Time),
+		reverseAliases:  make(map[string][]string),
 	}
 }

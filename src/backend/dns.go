@@ -2,6 +2,7 @@ package magitrickle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -129,267 +130,198 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 	return nil, nil, nil
 }
 
-// dnsResponseHook обрабатывает ответы DNS
+// dnsResponseHook installs routing before returning usable addresses to a client.
 func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.Msg, network string) (*dns.Msg, error) {
-	defer a.handleMessage(respMsg, clientAddr, network)
-
+	if err := a.handleMessage(respMsg, clientAddr, network); err != nil {
+		log.Error().Err(err).Msg("DNS routing failed; withholding addresses")
+		failure := new(dns.Msg)
+		failure.SetRcode(&reqMsg, dns.RcodeServerFailure)
+		return failure, nil
+	}
 	if a.Config().DNSProxy.DisableDropAAAA {
 		return nil, nil
 	}
-
-	// фильтрация записей AAAA
-	filteredAnswers := make([]dns.RR, 0, len(respMsg.Answer))
-	for _, answer := range respMsg.Answer {
-		if answer.Header().Rrtype != dns.TypeAAAA {
-			filteredAnswers = append(filteredAnswers, answer)
-		}
-	}
-	respMsg.Answer = filteredAnswers
-
+	// HTTPS/SVCB ipv6hint can otherwise bypass AAAA filtering entirely.
+	respMsg.Answer = withoutIPv6(respMsg.Answer)
+	respMsg.Ns = withoutIPv6(respMsg.Ns)
+	respMsg.Extra = withoutIPv6(respMsg.Extra)
+	respMsg.AuthenticatedData = false
 	return &respMsg, nil
 }
 
-// handleMessage обрабатывает полученное DNS-сообщение
-func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
-	idStr := formatID(msg.Id)
-	var clientAddrStr string
-	if clientAddr != nil {
-		clientAddrStr = clientAddr.String()
-	}
-
-	if msg.Rcode != dns.RcodeSuccess {
-		log.Warn().
-			Str("id", idStr).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
-			Msg("unprocessable response")
-
-		return
-	}
-
-	for _, rr := range msg.Answer {
-		if rr == nil {
+func withoutIPv6(records []dns.RR) []dns.RR {
+	result := make([]dns.RR, 0, len(records))
+	for _, rr := range records {
+		if rr == nil || rr.Header().Rrtype == dns.TypeAAAA {
 			continue
 		}
+		var binding *dns.SVCB
+		switch v := rr.(type) {
+		case *dns.HTTPS:
+			rr = dns.Copy(v)
+			binding = &rr.(*dns.HTTPS).SVCB
+		case *dns.SVCB:
+			rr = dns.Copy(v)
+			binding = rr.(*dns.SVCB)
+		}
+		if binding != nil {
+			values := binding.Value[:0]
+			valid := true
+			for _, value := range binding.Value {
+				if mandatory, ok := value.(*dns.SVCBMandatory); ok {
+					for _, key := range mandatory.Code {
+						if key == dns.SVCB_IPV6HINT {
+							valid = false
+						}
+					}
+				}
+				if value.Key() != dns.SVCB_IPV6HINT {
+					values = append(values, value)
+				}
+			}
+			if !valid {
+				continue
+			}
+			binding.Value = values
+		}
+		result = append(result, rr)
+	}
+	return result
+}
 
+func serviceBinding(rr dns.RR) *dns.SVCB {
+	switch v := rr.(type) {
+	case *dns.HTTPS:
+		return &v.SVCB
+	case *dns.SVCB:
+		return v
+	}
+	return nil
+}
+
+func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) error {
+	if msg.Rcode != dns.RcodeSuccess {
+		return nil
+	}
+	idStr := formatID(msg.Id)
+	client := ""
+	if clientAddr != nil {
+		client = clientAddr.String()
+	}
+	records := append(append([]dns.RR(nil), msg.Answer...), msg.Extra...)
+	// Learn the whole alias graph before any addresses, regardless of RR order.
+	for _, rr := range records {
+		switch v := rr.(type) {
+		case *dns.CNAME:
+			a.recordsCache.AddAlias(trimFQDN(v.Hdr.Name), trimFQDN(v.Target), routingTTL(v.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL))
+		default:
+			if binding := serviceBinding(rr); binding != nil {
+				a.recordsCache.AddBinding(trimFQDN(binding.Hdr.Name), trimFQDN(binding.Target), routingTTL(binding.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL))
+			}
+		}
+	}
+	var errs []error
+	for _, rr := range records {
 		switch v := rr.(type) {
 		case *dns.A:
-			a.processARecord(*v, idStr, clientAddrStr, network)
+			errs = append(errs, a.processARecord(*v, idStr, client, network))
 		case *dns.AAAA:
-			a.processAAAARecord(*v, idStr, clientAddrStr, network)
+			errs = append(errs, a.processAAAARecord(*v, idStr, client, network))
 		case *dns.CNAME:
-			a.processCNameRecord(*v, idStr, clientAddrStr, network)
-		}
-	}
-}
-
-func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string) {
-	domainName := trimFQDN(aRecord.Hdr.Name)
-	addrStr := aRecord.A.String()
-
-	if len(aRecord.A) != 4 {
-		log.Warn().
-			Str("id", idStr).
-			Str("name", domainName).
-			Str("address", addrStr).
-			Int("ttl", int(aRecord.Hdr.Ttl)).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
-			Msg("unprocessable A response")
-		return
-	}
-
-	log.Debug().
-		Str("id", idStr).
-		Str("name", domainName).
-		Str("address", addrStr).
-		Int("ttl", int(aRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
-		Msg("processing A record")
-
-	ttlDuration := routingTTL(aRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
-
-	a.recordsCache.AddAddress(domainName, aRecord.A, ttlDuration)
-
-	names := a.recordsCache.GetAliases(domainName)
-	for _, group := range a.ruleSetSnapshot() {
-	Rule:
-		for _, domain := range group.domainRules() {
-			for _, name := range names {
-				if !domain.IsMatch(name) {
-					continue
+			errs = append(errs, a.routeCachedAddresses(trimFQDN(v.Hdr.Name)))
+		default:
+			if binding := serviceBinding(rr); binding != nil {
+				for _, value := range binding.Value {
+					switch hints := value.(type) {
+					case *dns.SVCBIPv4Hint:
+						for _, ip := range hints.Hint {
+							errs = append(errs, a.processARecord(dns.A{Hdr: binding.Hdr, A: ip.To4()}, idStr, client, network))
+						}
+					case *dns.SVCBIPv6Hint:
+						for _, ip := range hints.Hint {
+							errs = append(errs, a.processAAAARecord(dns.AAAA{Hdr: binding.Hdr, AAAA: ip.To16()}, idStr, client, network))
+						}
+					}
 				}
-
-				// TODO: Check already existed
-				subnet := netfilterTools.IPv4Subnet{Address: [4]byte(aRecord.A), CIDR: 32}
-				if err := group.AddIPv4Subnet(subnet, &ttlDuration); err != nil {
-					log.Error().
-						Err(err).
-						Str("subnet", subnet.String()).
-						Str("aRecordDomain", domainName).
-						Str("cNameDomain", name).
-						Msg("failed to add subnet")
-				} else {
-					log.Debug().
-						Str("subnet", subnet.String()).
-						Str("aRecordDomain", domainName).
-						Str("cNameDomain", name).
-						Msg("added subnet")
-				}
-
-				log.Info().
-					Str("name", domainName).
-					Str("address", addrStr).
-					Str("group", group.DisplayName()).
-					Str("groupId", group.IDValue().String()).
-					Msg("added to routing")
-
-				break Rule
+				errs = append(errs, a.routeCachedAddresses(trimFQDN(binding.Hdr.Name)))
 			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
-func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, network string) {
-	domainName := trimFQDN(aaaaRecord.Hdr.Name)
-	addrStr := aaaaRecord.AAAA.String()
-
-	if len(aaaaRecord.AAAA) != 16 {
-		log.Warn().
-			Str("id", idStr).
-			Str("name", domainName).
-			Str("address", addrStr).
-			Int("ttl", int(aaaaRecord.Hdr.Ttl)).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
-			Msg("unprocessable AAAA response")
-		return
+func (a *App) processARecord(record dns.A, idStr, client, network string) error {
+	if len(record.A) != net.IPv4len {
+		return fmt.Errorf("invalid A address for %s", record.Hdr.Name)
 	}
-
-	log.Debug().
-		Str("id", idStr).
-		Str("name", domainName).
-		Str("address", addrStr).
-		Int("ttl", int(aaaaRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
-		Msg("processing AAAA record")
-
-	ttlDuration := routingTTL(aaaaRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
-
-	a.recordsCache.AddAddress(domainName, aaaaRecord.AAAA, ttlDuration)
-
-	names := a.recordsCache.GetAliases(domainName)
-	for _, group := range a.ruleSetSnapshot() {
-	Rule:
-		for _, domain := range group.domainRules() {
-			for _, name := range names {
-				if !domain.IsMatch(name) {
-					continue
-				}
-
-				// TODO: Check already existed
-				subnet := netfilterTools.IPv6Subnet{Address: [16]byte(aaaaRecord.AAAA), CIDR: 128}
-				if err := group.AddIPv6Subnet(subnet, &ttlDuration); err != nil {
-					log.Error().
-						Err(err).
-						Str("subnet", subnet.String()).
-						Str("aaaaRecordDomain", domainName).
-						Str("cNameDomain", name).
-						Msg("failed to add subnet")
-				} else {
-					log.Debug().
-						Str("subnet", subnet.String()).
-						Str("aaaaRecordDomain", domainName).
-						Str("cNameDomain", name).
-						Msg("added subnet")
-				}
-
-				log.Info().
-					Str("name", domainName).
-					Str("address", addrStr).
-					Str("group", group.DisplayName()).
-					Str("groupId", group.IDValue().String()).
-					Msg("added to routing")
-
-				break Rule
-			}
-		}
-	}
+	return a.processDNSAddress(record.Hdr, record.A, idStr, client, network)
 }
 
-func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, network string) {
-	domainName := trimFQDN(cNameRecord.Hdr.Name)
-	targetName := trimFQDN(cNameRecord.Target)
+func (a *App) processAAAARecord(record dns.AAAA, idStr, client, network string) error {
+	if len(record.AAAA) != net.IPv6len {
+		return fmt.Errorf("invalid AAAA address for %s", record.Hdr.Name)
+	}
+	return a.processDNSAddress(record.Hdr, record.AAAA, idStr, client, network)
+}
 
-	log.Debug().
-		Str("id", idStr).
-		Str("name", domainName).
-		Str("cname", targetName).
-		Int("ttl", int(cNameRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
-		Msg("processing CNAME record")
+func (a *App) processDNSAddress(header dns.RR_Header, ip net.IP, idStr, client, network string) error {
+	name := trimFQDN(header.Name)
+	ttl := routingTTL(header.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
+	a.recordsCache.AddAddress(name, ip, ttl)
+	log.Debug().Str("id", idStr).Str("name", name).Str("address", ip.String()).
+		Str("clientAddr", client).Str("network", network).Msg("processing DNS address")
+	return a.routeDNSAddress(a.recordsCache.GetAliases(name), ip, ttl)
+}
 
-	ttlDuration := routingTTL(cNameRecord.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL)
+func (a *App) processCNameRecord(record dns.CNAME, idStr, client, network string) error {
+	name := trimFQDN(record.Hdr.Name)
+	a.recordsCache.AddAlias(name, trimFQDN(record.Target), routingTTL(record.Hdr.Ttl, a.Config().Netfilter.IPSet.AdditionalTTL))
+	return a.routeCachedAddresses(name)
+}
 
-	a.recordsCache.AddAlias(domainName, targetName, ttlDuration)
-
+func (a *App) routeCachedAddresses(name string) error {
+	names := a.recordsCache.GetAliases(name)
+	var errs []error
 	now := time.Now()
-	addresses := a.recordsCache.GetAddresses(domainName)
-	aliases := a.recordsCache.GetAliases(domainName)
+	for _, address := range a.recordsCache.GetAddresses(name) {
+		if ttl := remainingTTL(address.Deadline, now); ttl != 0 {
+			errs = append(errs, a.routeDNSAddress(names, address.Address, ttl))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *App) routeDNSAddress(names []string, ip net.IP, ttl uint32) error {
+	var errs []error
 	for _, group := range a.ruleSetSnapshot() {
-	Rule:
-		for _, domain := range group.domainRules() {
-			for _, alias := range aliases {
-				if !domain.IsMatch(alias) {
-					continue
+		matched, err := group.addDNSAddress(names, ip, ttl)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("group %s: %w", group.IDValue(), err))
+		} else if matched {
+			log.Info().Str("address", ip.String()).Str("group", group.DisplayName()).
+				Str("groupId", group.IDValue().String()).Msg("added to routing")
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Match and add under one lock: a concurrent group edit must not add a DNS
+// address using a previous model's rules after the new model was published.
+func (g *RuleSet) addDNSAddress(names []string, ip net.IP, ttl uint32) (bool, error) {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	if !g.Enabled() || !g.ConfiguredEnabled() {
+		return false, nil
+	}
+	for _, rule := range g.domainRules() {
+		for _, name := range names {
+			if rule.IsMatch(name) {
+				if len(ip) == net.IPv4len {
+					return true, g.addIPv4Subnet(netfilterTools.IPv4Subnet{Address: [4]byte(ip), CIDR: 32}, &ttl)
 				}
-
-				log.Info().
-					Str("name", domainName).
-					Str("cname", targetName).
-					Str("group", group.DisplayName()).
-					Str("groupId", group.IDValue().String()).
-					Msg("added alias")
-
-				for _, address := range addresses {
-					ttl := remainingTTL(address.Deadline, now)
-					if ttl == 0 {
-						continue
-					}
-
-					if len(address.Address) == net.IPv4len {
-						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address), CIDR: 32}
-						if err := group.AddIPv4Subnet(subnet, &ttl); err != nil {
-							log.Error().
-								Err(err).
-								Str("subnet", subnet.String()).
-								Str("cNameDomain", alias).
-								Msg("failed to add subnet")
-						}
-						log.Debug().
-							Str("subnet", subnet.String()).
-							Str("cNameDomain", alias).
-							Msg("added subnet")
-					} else if len(address.Address) == net.IPv6len {
-						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address), CIDR: 128}
-						if err := group.AddIPv6Subnet(subnet, &ttl); err != nil {
-							log.Error().
-								Err(err).
-								Str("subnet", subnet.String()).
-								Str("cNameDomain", alias).
-								Msg("failed to add subnet")
-						}
-						log.Debug().
-							Str("subnet", subnet.String()).
-							Str("cNameDomain", alias).
-							Msg("added subnet")
-					}
-				}
-				break Rule
+				return true, g.addIPv6Subnet(netfilterTools.IPv6Subnet{Address: [16]byte(ip), CIDR: 128}, &ttl)
 			}
 		}
 	}
+	return false, nil
 }

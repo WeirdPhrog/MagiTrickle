@@ -127,7 +127,12 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 	defer g.locker.Unlock()
 	previous := g.Model()
 	running := g.Enabled()
-	if running && previous.Enable && model.Enable {
+	if running && previous.Enable && (g.ipset == nil || g.ipsetToLink == nil) {
+		if err := g.disable(); err != nil {
+			return err
+		}
+	}
+	if g.Enabled() && previous.Enable && model.Enable {
 		// DNS additions use this same lock. Prepare replacement sets without
 		// unlinking the existing packet classification or policy routes.
 		g.storeModel(model)
@@ -326,19 +331,19 @@ func (g *RuleSet) enable() error {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
 
+	g.ipset = ipset
 	if err := ipset.Enable(); err != nil {
 		return fmt.Errorf("failed to initialize ipset: %w", err)
 	}
-	g.ipset = ipset
 
 	// Fill the set before linking it into packet classification.
 	if err := g.sync(); err != nil {
 		return err
 	}
+	g.ipsetToLink = ipsetToLink
 	if err := ipsetToLink.Enable(); err != nil {
 		return fmt.Errorf("failed to link ipset to interface: %w", err)
 	}
-	g.ipsetToLink = ipsetToLink
 
 	return nil
 }
@@ -357,34 +362,20 @@ func (g *RuleSet) disable() error {
 	if !g.Enabled() {
 		return nil
 	}
-	defer g.enabled.Store(false)
-
-	if !g.ConfiguredEnabled() {
-		return nil
-	}
-
-	var errs []error
-	errs = append(errs, func() error {
-		if g.ipsetToLink == nil {
-			return nil
-		}
+	if g.ipsetToLink != nil {
 		if err := g.ipsetToLink.Disable(); err != nil {
 			return fmt.Errorf("failed to unlink ipset from interface: %w", err)
 		}
 		g.ipsetToLink = nil
-		return nil
-	}())
-	errs = append(errs, func() error {
-		if g.ipset == nil {
-			return nil
-		}
+	}
+	if g.ipset != nil {
 		if err := g.ipset.Disable(); err != nil {
 			return fmt.Errorf("failed to destroy ipset: %w", err)
 		}
 		g.ipset = nil
-		return nil
-	}())
-	return errors.Join(errs...)
+	}
+	g.enabled.Store(false)
+	return nil
 }
 
 func (g *RuleSet) Disable() error {
