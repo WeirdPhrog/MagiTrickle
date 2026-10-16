@@ -385,11 +385,15 @@ func (g *RuleSet) Disable() error {
 }
 
 func (g *RuleSet) sync() error {
+	return g.syncRules(g.RuleModels(), false)
+}
+
+func (g *RuleSet) syncRules(rules []*models.Rule, retainOld bool) error {
 	now := time.Now()
 	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
 	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)
 	knownDomains := g.app.recordsCache.ListKnownDomains()
-	for _, domain := range g.RuleModels() {
+	for _, domain := range rules {
 		if !domain.IsEnabled() {
 			continue
 		}
@@ -510,6 +514,18 @@ func (g *RuleSet) sync() error {
 		}
 	}
 
+	if retainOld {
+		old4, err := g.ipset.ListIPv4Subnets()
+		if err != nil {
+			return err
+		}
+		old6, err := g.ipset.ListIPv6Subnets()
+		if err != nil {
+			return err
+		}
+		retainSubnets(newIPv4SubnetList, old4)
+		retainSubnets(newIPv6SubnetList, old6)
+	}
 	if err := g.ipset.Replace(newIPv4SubnetList, newIPv6SubnetList); err != nil {
 		return fmt.Errorf("failed to replace routing set: %w", err)
 	}
@@ -526,6 +542,55 @@ func (g *RuleSet) sync() error {
 		}
 	}
 	return nil
+}
+
+func retainSubnets[K comparable](next, old map[K]netfilterTools.IPSetTimeout) {
+	for subnet, ttl := range old {
+		current, exists := next[subnet]
+		if !exists || ttl == nil || (current != nil && *ttl > *current) {
+			next[subnet] = ttl
+		}
+	}
+}
+
+// Prepare additions for every edited set before any set removes addresses.
+// This covers a domain/IP being moved between two existing groups in one edit.
+func (g *RuleSet) prepareUpdate(model *models.Group, retainOld bool) error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	if !g.Enabled() || !g.ConfiguredEnabled() || !model.Enable {
+		return nil
+	}
+	if g.ipset == nil || g.ipsetToLink == nil {
+		return fmt.Errorf("routing is not ready")
+	}
+	if g.RouteInterface() != model.Interface {
+		if err := g.ipsetToLink.SetInterface(netfilterTools.Blackhole); err != nil {
+			return err
+		}
+	}
+	if retainOld && !sameRules(g.RuleModels(), model.Rules) {
+		return g.syncRules(model.Rules, true)
+	}
+	return nil
+}
+
+func (g *RuleSet) restoreModel(model *models.Group) error {
+	if !g.Enabled() || !g.ConfiguredEnabled() || !model.Enable || g.ipset == nil || g.ipsetToLink == nil {
+		return g.updateModel(model)
+	}
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	// Restore contents before releasing a suspended interface, and remove
+	// additions retained during preparation even if the model never changed.
+	if err := g.ipsetToLink.SetInterface(netfilterTools.Blackhole); err != nil {
+		return err
+	}
+	g.storeModel(model)
+	if err := g.sync(); err != nil {
+		return err
+	}
+	return g.ipsetToLink.SetInterface(model.Interface)
 }
 
 func (g *RuleSet) Sync() error {

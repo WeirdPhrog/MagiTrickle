@@ -66,7 +66,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y iptables ipset iproute2 iputils-ping shellcheck
-      - name: Real IPv4/IPv6 packet and connection marks (isolated namespaces)
+      - name: Real IPv4/IPv6 forwarding, fail-closed updates and DNS routing (isolated namespaces)
         working-directory: src/backend
         run: |
           go test -c -tags integration -o /tmp/routing.test ./utils/netfilterTools
@@ -195,11 +195,13 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           cat > /tmp/release-notes <<'EOF'
-          The WebUI About dialog now includes a direct link to the WeirdPhrog/MagiTrickle GitHub fork, with English and Russian labels. The link is available from both the main interface and the sign-in page.
+          Routing updates preserve live rule sets and policy tables. Replacement ipsets are populated before swapping, large subscriptions can exceed 65536 entries, and interface changes retain a blackhole fallback instead of exposing the system WAN route. Bulk group edits prepare new memberships before removing old ones; default gateway selection respects route metrics.
+
+          DNS routing now handles HTTPS/SVCB address hints, multiple service targets and additional-section addresses. IPv6 hints follow AAAA filtering, shorter DNS answers do not shorten earlier address lifetimes, and failed ipset writes return SERVFAIL rather than unrouted addresses.
 
           Entware / Keenetic / Netcraze installation and updates are documented in README.md. Run `magitrickle-update` for future updates from this fork. Existing configuration is backed up and preserved.
 
-          CI includes unit/race tests, large-list benchmarks, real iptables legacy/nft packet and route-restoration tests in isolated network namespaces, installer tests, frontend checks and router package builds. Performance benchmarks run on the CI host, not a physical router.
+          CI includes unit/race tests, large-list benchmarks, real IPv4/IPv6 LAN forwarding with WAN leak counters on iptables legacy/nft, a 65537-entry ipset, DNS routing failure tests, route-restoration tests, installer tests, frontend checks and router package builds. These tests run in isolated Linux namespaces, not on a physical Keenetic/Netcraze router.
           EOF
           if gh release view "v$VERSION" --json isDraft >/dev/null 2>&1; then
             test "$(gh release view "v$VERSION" --json targetCommitish --jq .targetCommitish)" = "$GITHUB_SHA"

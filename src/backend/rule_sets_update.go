@@ -55,13 +55,38 @@ func (a *App) reconcileRuleSets(previous []*RuleSet, specs []rulesets.Spec, subs
 			}
 		}
 		for _, g := range previous {
-			errs = append(errs, g.updateModel(oldModels[g]))
+			errs = append(errs, g.restoreModel(oldModels[g]))
 			if a.enabled.Load() {
 				errs = append(errs, g.Enable())
 			}
 		}
 		errs = append(errs, order(previous))
 		return nil, errors.Join(errs...)
+	}
+	// New targets must exist before a previous set can stop matching. When
+	// several existing lists change, retain their old addresses until all new
+	// memberships are ready. Ordinary single-subscription refreshes need one swap.
+	changed := 0
+	for i, g := range next {
+		if old := oldModels[g]; old != nil && !sameRules(old.Rules, modelFromSpec(specs[i]).Rules) {
+			changed++
+		}
+		old, desired := oldModels[g], modelFromSpec(specs[i])
+		if a.enabled.Load() && (old == nil || (!old.Enable && desired.Enable)) {
+			if err := g.updateModel(desired); err != nil {
+				return rollback(err)
+			}
+			if err := g.Enable(); err != nil {
+				return rollback(err)
+			}
+		}
+	}
+	for i, g := range next {
+		if oldModels[g] != nil {
+			if err := g.prepareUpdate(modelFromSpec(specs[i]), changed > 1); err != nil {
+				return rollback(err)
+			}
+		}
 	}
 	for i, g := range next {
 		if err := g.updateModel(modelFromSpec(specs[i])); err != nil {

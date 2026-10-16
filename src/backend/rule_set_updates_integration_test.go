@@ -190,6 +190,29 @@ func TestRealRuleSetSyncUpdates(t *testing.T) {
 	assertEgress("mtvpn")
 	check(a.ReplaceGroups([]*models.Group{group}))
 	assertEgress("mtother")
+	// Edit membership and interface together, then transfer addresses between
+	// two existing groups in both directions without falling into subscriptions.
+	combined := *group
+	combined.Interface = "mtvpn"
+	combined.Rules = append(append([]*models.Rule(nil), group.Rules...), &models.Rule{ID: intID.ID{25}, Type: models.RuleTypeSubnet, Rule: "203.0.113.1/32", Enable: true})
+	check(a.UpdateGroup(&combined))
+	assertEgress("mtvpn")
+	check(a.UpdateGroup(group))
+	assertEgress("mtother")
+	receiver := &models.Group{ID: intID.ID{24}, Interface: "mtother", Enable: true}
+	check(a.AddGroup(receiver))
+	empty, received := *group, *receiver
+	empty.Rules, received.Rules = nil, group.Rules
+	check(a.ReplaceGroups([]*models.Group{&empty, &received}))
+	assertEgress("mtother")
+	check(a.ReplaceGroups([]*models.Group{group, receiver}))
+	assertEgress("mtother")
+	invalid := *group
+	invalid.Interface = "interface-name-too-long-for-kernel"
+	if err := a.UpdateGroup(&invalid); err == nil {
+		t.Fatal("invalid interface unexpectedly accepted")
+	}
+	assertEgress("mtother")
 	// A bad replacement must preserve both old address families.
 	if err := g.ipset.Replace(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout{{Address: [4]byte{198, 18, 0, 1}, CIDR: 32}: nil}, map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout{{CIDR: 255}: nil}); err == nil {
 		t.Fatal("invalid replacement unexpectedly succeeded")

@@ -38,4 +38,10 @@ func TestNewAnswerDoesNotShortenEarlierClientTTL(t *testing.T) {
 	if got := r.GetAddresses("example")[0].Deadline; !got.Equal(deadline) {
 		t.Fatal("short answer removed the lifetime of an earlier cached answer")
 	}
+	r.AddAlias("alias", "example", 120)
+	aliasDeadline := r.aliases["alias"].Deadline
+	r.AddAlias("alias", "example", 1)
+	if !r.aliases["alias"].Deadline.Equal(aliasDeadline) {
+		t.Fatal("short answer removed the earlier CNAME lifetime")
+	}
 }

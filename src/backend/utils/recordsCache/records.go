@@ -46,6 +46,9 @@ func (r *Records) AddAlias(domainName, alias string, ttl uint32) {
 
 	// Удаляем старый reverse alias если был
 	if oldAlias, ok := r.aliases[domainName]; ok {
+		if oldAlias.Alias == alias && oldAlias.Deadline.After(deadline) {
+			deadline = oldAlias.Deadline
+		}
 		r.removeReverseAlias(oldAlias.Alias, domainName)
 	}
 
