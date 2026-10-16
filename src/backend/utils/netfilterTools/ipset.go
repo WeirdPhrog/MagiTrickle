@@ -202,6 +202,61 @@ func (r *IPSet) ListIPv6Subnets() (map[IPv6Subnet]IPSetTimeout, error) {
 	return addresses, nil
 }
 
+// Replace prepares both families before publishing either. An invalid entry or
+// a full set must leave the live routing set intact, not partially emptied.
+func (r *IPSet) Replace(v4 map[IPv4Subnet]IPSetTimeout, v6 map[IPv6Subnet]IPSetTimeout) error {
+	r.locker.Lock()
+	defer r.locker.Unlock()
+	if !r.enabled.Load() {
+		return fmt.Errorf("ipset is disabled")
+	}
+	tmp4, tmp6 := r.ipsetName+"_t4", r.ipsetName+"_t6"
+	for _, name := range []string{tmp4, tmp6} {
+		if err := netlink.IpsetDestroy(name); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	defer netlink.IpsetDestroy(tmp4)
+	defer netlink.IpsetDestroy(tmp6)
+	create := func(name string, family uint8, count int) error {
+		// maxelem is a limit, not an up-front allocation. Leave room for DNS
+		// hosts and allow subscriptions larger than ipset's 65536 default.
+		return netlink.IpsetCreate(name, "hash:net", netlink.IpsetCreateOptions{
+			Timeout: new(uint32(300)), Family: family,
+			MaxElements: uint32(max(65536, count+count/4)),
+		})
+	}
+	if err := create(tmp4, unix.AF_INET, len(v4)); err != nil {
+		return err
+	}
+	if err := create(tmp6, unix.AF_INET6, len(v6)); err != nil {
+		return err
+	}
+	for subnet, ttl := range v4 {
+		if ttl == nil {
+			ttl = zeroTimeout
+		}
+		if err := netlink.IpsetAdd(tmp4, &netlink.IPSetEntry{IP: subnet.Address[:], CIDR: subnet.CIDR, Timeout: ttl}); err != nil {
+			return fmt.Errorf("prepare IPv4 set: %w", err)
+		}
+	}
+	for subnet, ttl := range v6 {
+		if ttl == nil {
+			ttl = zeroTimeout
+		}
+		if err := netlink.IpsetAdd(tmp6, &netlink.IPSetEntry{IP: subnet.Address[:], CIDR: subnet.CIDR, Timeout: ttl}); err != nil {
+			return fmt.Errorf("prepare IPv6 set: %w", err)
+		}
+	}
+	if err := netlink.IpsetSwap(tmp4, r.ipsetName+"_4"); err != nil {
+		return err
+	}
+	if err := netlink.IpsetSwap(tmp6, r.ipsetName+"_6"); err != nil {
+		return errors.Join(err, netlink.IpsetSwap(tmp4, r.ipsetName+"_4"))
+	}
+	return nil
+}
+
 func (r *IPSet) ipsetCreate() error {
 	err := netlink.IpsetCreate(r.ipsetName+"_4", "hash:net", netlink.IpsetCreateOptions{
 		Timeout: func(i uint32) *uint32 { return &i }(300),

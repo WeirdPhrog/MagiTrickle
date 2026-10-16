@@ -1,7 +1,6 @@
 package magitrickle
 
 import (
-	"errors"
 	"fmt"
 
 	"magitrickle/app"
@@ -40,9 +39,14 @@ func (a *App) UpdateGroup(model *models.Group) error {
 	}
 	a.stateMu.Lock()
 	defer a.stateMu.Unlock()
-	for _, group := range a.userRuleSets {
+	for idx, group := range a.userRuleSets {
 		if group.IDValue() == model.ID {
-			return group.updateModel(model)
+			models := make([]*models.Group, len(a.userRuleSets))
+			for i, current := range a.userRuleSets {
+				models[i] = current.Model()
+			}
+			models[idx] = model
+			return a.replaceGroupsLocked(models)
 		}
 	}
 	return app.ErrGroupNotFound
@@ -60,35 +64,9 @@ func (a *App) ReplaceGroups(models []*models.Group) error {
 }
 
 func (a *App) replaceGroupsLocked(models []*models.Group) error {
-	next := make([]*RuleSet, 0, len(models))
-	for _, model := range models {
-		group, err := NewRuleSet(groupruntime.BuildRuntimeRuleSet(model), a)
-		if err != nil {
-			return err
-		}
-		next = append(next, group)
+	next, err := a.reconcileRuleSets(a.userRuleSets, groupruntime.BuildRuntimeRuleSets(models), false)
+	if err == nil {
+		a.userRuleSets = next
 	}
-	previous := a.userRuleSets
-	enable := func(groups []*RuleSet) error {
-		if !a.enabled.Load() {
-			return nil
-		}
-		for _, group := range groups {
-			if err := group.Enable(); err != nil {
-				return err
-			}
-			if err := group.Sync(); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := disableRuleSets(previous); err != nil {
-		return errors.Join(err, enable(previous))
-	}
-	if err := enable(next); err != nil {
-		return errors.Join(err, disableRuleSets(next), enable(previous))
-	}
-	a.userRuleSets = next
-	return nil
+	return err
 }

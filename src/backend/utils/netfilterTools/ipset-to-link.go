@@ -412,12 +412,13 @@ func (r *IPSetToLink) enable() error {
 	}
 	r.mark, r.table = idx, int(idx)
 
-	err = r.insertIPRule()
+	// Install the terminal blackhole route before making this table reachable.
+	err = r.insertIPRoute()
 	if err != nil {
 		return err
 	}
 
-	err = r.insertIPRoute()
+	err = r.insertIPRule()
 	if err != nil {
 		return err
 	}
@@ -456,14 +457,67 @@ func (r *IPSetToLink) disable() error {
 	if !r.enabled.Load() {
 		return nil
 	}
-	defer r.enabled.Store(false)
+	// Keep policy routes (including blackholes) while packets can still be
+	// marked. If unlinking fails, retain them and allow a later cleanup retry.
+	if err := errors.Join(r.deleteIPTablesRules(r.nh.IPTables4), r.deleteIPTablesRules(r.nh.IPTables6)); err != nil {
+		return err
+	}
+	if err := r.deleteIPRule(); err != nil {
+		return err
+	}
+	if err := r.deleteIPRoute(); err != nil {
+		return err
+	}
+	r.enabled.Store(false)
+	return nil
+}
 
-	var errs []error
-	errs = append(errs, r.deleteIPRoute())
-	errs = append(errs, r.deleteIPRule())
-	errs = append(errs, r.deleteIPTablesRules(r.nh.IPTables4))
-	errs = append(errs, r.deleteIPTablesRules(r.nh.IPTables6))
-	return errors.Join(errs...)
+// SetInterface keeps the mark, table and live ipset. During the transition the
+// blackhole default remains installed, so there is no fall-through to WAN.
+func (r *IPSetToLink) SetInterface(name string) error {
+	r.locker.Lock()
+	defer r.locker.Unlock()
+	if r.ifaceName == name {
+		return nil
+	}
+	previous := r.ifaceName
+	apply := func(name string) error {
+		// Remove only the active routes; the fallback must survive a missing,
+		// down or IPv4-only replacement VPN.
+		for _, routes := range []*[2]*netlink.Route{&r.ip4Route, &r.ip6Route} {
+			if routes[1] != nil {
+				if err := netlink.RouteDel(routes[1]); err != nil && !errors.Is(err, unix.ESRCH) {
+					return err
+				}
+				routes[1] = nil
+			}
+		}
+		r.ifaceName = name
+		if err := r.insertIPRoute(); err != nil {
+			return err
+		}
+		for _, ipt := range []*iptables.IPTables{r.nh.IPTables4, r.nh.IPTables6} {
+			if ipt == nil {
+				continue
+			}
+			if err := ipt.RegisterChainOverride("filter", r.chainName); err != nil {
+				return err
+			}
+			if name != Blackhole {
+				if err := ipt.Append("filter", r.chainName, "-o", name, "-m", "set", "--match-set", r.ipsetName(ipt), "dst", "-j", "ACCEPT"); err != nil {
+					return err
+				}
+			}
+			if err := ipt.Commit(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := apply(name); err != nil {
+		return errors.Join(err, apply(previous))
+	}
+	return nil
 }
 
 func (r *IPSetToLink) Disable() error {

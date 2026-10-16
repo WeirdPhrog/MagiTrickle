@@ -6,6 +6,36 @@ import (
 	"magitrickle/utils/iptables"
 )
 
+// SetRoutingOrder preserves last-match priority when lists are reordered or a
+// previously disabled set is enabled again. The table commit is atomic.
+func (nh *Helper) SetRoutingOrder(keys []string, subscription bool) error {
+	chain := nh.ChainPrefix + "GROUPS"
+	if subscription {
+		chain = nh.ChainPrefix + "SUBS"
+	}
+	for _, ipt := range []*iptables.IPTables{nh.IPTables4, nh.IPTables6} {
+		if ipt == nil {
+			continue
+		}
+		if err := ipt.RegisterChainOverride("mangle", chain); err != nil {
+			return err
+		}
+		suffix := "_4"
+		if ipt.Proto() == iptables.ProtocolIPv6 {
+			suffix = "_6"
+		}
+		for _, key := range keys {
+			if err := ipt.Append("mangle", chain, "-m", "set", "--match-set", nh.IpsetPrefix+key+suffix, "dst", "-j", nh.ChainPrefix+key); err != nil {
+				return err
+			}
+		}
+		if err := ipt.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // InitRouting installs fixed routing tiers. MARK is not terminal: groups run
 // last so an explicit group overrides subscriptions, regardless of when either
 // rule set is enabled or refreshed. Ordering within each tier is unchanged.

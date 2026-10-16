@@ -133,9 +133,6 @@ func (a *App) Start(ctx context.Context) (err error) {
 		if err := group.Enable(); err != nil {
 			return fmt.Errorf("failed to enable group: %w", err)
 		}
-		if err := group.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group: %w", err)
-		}
 	}
 	// Publish the API only after every rule set is ready.
 	httpServer, err := api.SetupHTTP(a, errChan)

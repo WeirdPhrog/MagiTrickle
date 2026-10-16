@@ -121,11 +121,6 @@ func (a *App) addGroupLocked(groupModel *models.Group) error {
 			removeAdded()
 			return fmt.Errorf("failed to enable group: %w", err)
 		}
-		if err = grp.Sync(); err != nil {
-			_ = grp.Disable()
-			removeAdded()
-			return fmt.Errorf("failed to sync group: %w", err)
-		}
 	}
 	return nil
 }

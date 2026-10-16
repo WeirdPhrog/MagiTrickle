@@ -13,7 +13,6 @@ import (
 	"magitrickle/utils/intID"
 	"magitrickle/utils/netfilterTools"
 
-	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
 )
 
@@ -59,12 +58,11 @@ func (g *RuleSet) Model() *models.Group {
 }
 
 func (g *RuleSet) storeModel(group *models.Group) {
-	rules := g.spec.Rules
-	if group != nil {
-		rules = group.Rules
+	if group == nil {
+		group = modelFromSpec(g.spec)
 	}
 	model := &ruleSetModel{group: group}
-	for _, rule := range rules {
+	for _, rule := range group.Rules {
 		if !rule.Enable {
 			continue
 		}
@@ -79,11 +77,7 @@ func (g *RuleSet) storeModel(group *models.Group) {
 
 func (g *RuleSet) domainRules() []*models.Rule {
 	model := g.model.Load()
-	if model.group != nil {
-		if !model.group.Enable {
-			return nil
-		}
-	} else if !g.spec.Enable {
+	if !model.group.Enable {
 		return nil
 	}
 	return model.domainRules
@@ -133,8 +127,27 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 	defer g.locker.Unlock()
 	previous := g.Model()
 	running := g.Enabled()
-	restart := running && (previous.Interface != model.Interface || previous.Enable != model.Enable)
-	if restart {
+	if running && previous.Enable && model.Enable {
+		// DNS additions use this same lock. Prepare replacement sets without
+		// unlinking the existing packet classification or policy routes.
+		g.storeModel(model)
+		changed := !sameRules(previous.Rules, model.Rules)
+		if changed {
+			if err := g.sync(); err != nil {
+				g.storeModel(previous)
+				return err
+			}
+		}
+		if err := g.ipsetToLink.SetInterface(model.Interface); err != nil {
+			g.storeModel(previous)
+			if changed {
+				return errors.Join(err, g.sync())
+			}
+			return err
+		}
+		return nil
+	}
+	if running && previous.Enable != model.Enable {
 		if err := g.disable(); err != nil {
 			return err
 		}
@@ -147,9 +160,6 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 		if err := g.enable(); err != nil {
 			return err
 		}
-		if g.ConfiguredEnabled() {
-			return g.sync()
-		}
 		return nil
 	}
 	if err := apply(); err != nil {
@@ -158,6 +168,27 @@ func (g *RuleSet) updateModel(model *models.Group) error {
 		return errors.Join(err, cleanupErr, apply())
 	}
 	return nil
+}
+
+func modelFromSpec(spec rulesets.Spec) *models.Group {
+	if spec.Model != nil {
+		return spec.Model
+	}
+	return &models.Group{ID: spec.ID, Name: spec.Name, Interface: spec.Interface, Enable: spec.Enable, Rules: spec.Rules}
+}
+
+// Compare configuration fields only; compiled regexes contain mutable locks.
+func sameRules(a, b []*models.Rule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, x := range a {
+		y := b[i]
+		if x.ID != y.ID || x.Type != y.Type || x.Rule != y.Rule || x.Enable != y.Enable {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *RuleSet) addIPv4Subnet(subnet netfilterTools.IPv4Subnet, ttl netfilterTools.IPSetTimeout) error {
@@ -300,6 +331,10 @@ func (g *RuleSet) enable() error {
 	}
 	g.ipset = ipset
 
+	// Fill the set before linking it into packet classification.
+	if err := g.sync(); err != nil {
+		return err
+	}
 	if err := ipsetToLink.Enable(); err != nil {
 		return fmt.Errorf("failed to link ipset to interface: %w", err)
 	}
@@ -484,6 +519,9 @@ func (g *RuleSet) sync() error {
 		}
 	}
 
+	if err := g.ipset.Replace(newIPv4SubnetList, newIPv6SubnetList); err != nil {
+		return fmt.Errorf("failed to replace routing set: %w", err)
+	}
 	g.permanentIPv4 = make(map[netfilterTools.IPv4Subnet]bool)
 	g.permanentIPv6 = make(map[netfilterTools.IPv6Subnet]bool)
 	for subnet, ttl := range newIPv4SubnetList {
@@ -496,90 +534,7 @@ func (g *RuleSet) sync() error {
 			g.permanentIPv6[subnet] = true
 		}
 	}
-	oldIPv4SubnetList, err := g.listIPv4Subnets()
-	if err != nil {
-		return fmt.Errorf("failed to get old ipset list: %w", err)
-	}
-	var syncErrors []error
-	for subnet, newTTL := range newIPv4SubnetList {
-		if oldTTL, ok := oldIPv4SubnetList[subnet]; ok {
-			if (oldTTL == nil && newTTL == nil) || (oldTTL != nil && newTTL != nil && *newTTL < *oldTTL) {
-				continue
-			}
-		}
-
-		if err := g.addIPv4Subnet(subnet, newTTL); err != nil {
-			syncErrors = append(syncErrors, err)
-			log.Error().
-				Err(err).
-				Str("subnet", subnet.String()).
-				Msg("failed to add subnet")
-		} else {
-			log.Debug().
-				Str("subnet", subnet.String()).
-				Msg("added subnet")
-		}
-	}
-	for subnet := range oldIPv4SubnetList {
-		if _, ok := newIPv4SubnetList[subnet]; ok {
-			continue
-		}
-
-		if err := g.delIPv4Subnet(subnet); err != nil {
-			syncErrors = append(syncErrors, err)
-			log.Error().
-				Err(err).
-				Str("subnet", subnet.String()).
-				Msg("failed to delete subnet")
-		} else {
-			log.Debug().
-				Str("subnet", subnet.String()).
-				Msg("deleted subnet")
-		}
-	}
-
-	oldIPv6SubnetList, err := g.listIPv6Subnets()
-	if err != nil {
-		return fmt.Errorf("failed to get old ipset list: %w", err)
-	}
-	for subnet, newTTL := range newIPv6SubnetList {
-		if oldTTL, ok := oldIPv6SubnetList[subnet]; ok {
-			if (oldTTL == nil && newTTL == nil) || (oldTTL != nil && newTTL != nil && *newTTL < *oldTTL) {
-				continue
-			}
-		}
-
-		if err := g.addIPv6Subnet(subnet, newTTL); err != nil {
-			syncErrors = append(syncErrors, err)
-			log.Error().
-				Err(err).
-				Str("subnet", subnet.String()).
-				Msg("failed to add subnet")
-		} else {
-			log.Debug().
-				Str("subnet", subnet.String()).
-				Msg("added subnet")
-		}
-	}
-	for subnet := range oldIPv6SubnetList {
-		if _, ok := newIPv6SubnetList[subnet]; ok {
-			continue
-		}
-
-		if err := g.delIPv6Subnet(subnet); err != nil {
-			syncErrors = append(syncErrors, err)
-			log.Error().
-				Err(err).
-				Str("subnet", subnet.String()).
-				Msg("failed to delete subnet")
-		} else {
-			log.Debug().
-				Str("subnet", subnet.String()).
-				Msg("deleted subnet")
-		}
-	}
-
-	return errors.Join(syncErrors...)
+	return nil
 }
 
 func (g *RuleSet) Sync() error {

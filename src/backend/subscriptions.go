@@ -52,49 +52,11 @@ func (a *App) SyncSubscriptionRuleSets() error {
 }
 
 func (a *App) syncSubscriptionRuleSetsLocked() error {
-	var errs []error
-
-	for _, ruleSet := range a.subscriptionRuleSets {
-		if err := ruleSet.Disable(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to disable subscription rule set %s: %w", ruleSet.IDValue().String(), err))
-		}
+	next, err := a.reconcileRuleSets(a.subscriptionRuleSets, subscriptions.BuildRuntimeRuleSets(a.subscriptions), true)
+	if err == nil {
+		a.subscriptionRuleSets = next
 	}
-	a.subscriptionRuleSets = nil
-
-	runtimeRuleSets, err := a.buildSubscriptionRuleSetsLocked()
-	if err != nil {
-		return errors.Join(append(errs, err)...)
-	}
-	a.subscriptionRuleSets = runtimeRuleSets
-
-	return errors.Join(errs...)
-}
-
-func (a *App) buildSubscriptionRuleSetsLocked() ([]*RuleSet, error) {
-	specs := subscriptions.BuildRuntimeRuleSets(a.subscriptions)
-	runtimeRuleSets := make([]*RuleSet, 0, len(specs))
-	for _, spec := range specs {
-		ruleSet, err := newRuleSet(spec, a)
-		if err != nil {
-			_ = disableRuleSets(runtimeRuleSets)
-			return nil, fmt.Errorf("failed to create subscription rule set %s: %w", spec.ID.String(), err)
-		}
-
-		runtimeRuleSets = append(runtimeRuleSets, ruleSet)
-		if !a.enabled.Load() {
-			continue
-		}
-
-		if err := ruleSet.Enable(); err != nil {
-			_ = disableRuleSets(runtimeRuleSets)
-			return nil, fmt.Errorf("failed to enable subscription rule set %s: %w", ruleSet.IDValue().String(), err)
-		}
-		if err := ruleSet.Sync(); err != nil {
-			_ = disableRuleSets(runtimeRuleSets)
-			return nil, fmt.Errorf("failed to sync subscription rule set %s: %w", ruleSet.IDValue().String(), err)
-		}
-	}
-	return runtimeRuleSets, nil
+	return err
 }
 
 func disableRuleSets(ruleSets []*RuleSet) error {
