@@ -333,12 +333,32 @@ func getGwFromIface(iface netlink.Link, family int) (net.IP, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, route := range routes {
-		if route.Gw != nil {
-			return route.Gw, nil
-		}
+	if gateway := defaultGateway(routes); gateway != nil {
+		return gateway, nil
 	}
 	return nil, fmt.Errorf("no gateway found for interface %s", iface.Attrs().Name)
+}
+
+func defaultGateway(routes []netlink.Route) net.IP {
+	var best *netlink.Route
+	for i := range routes {
+		route := &routes[i]
+		if route.Gw == nil {
+			continue
+		}
+		if route.Dst != nil {
+			if ones, _ := route.Dst.Mask.Size(); ones != 0 {
+				continue
+			}
+		}
+		if best == nil || route.Priority < best.Priority {
+			best = route
+		}
+	}
+	if best != nil {
+		return best.Gw
+	}
+	return nil
 }
 
 func (r *IPSetToLink) deleteIPRoute() error {

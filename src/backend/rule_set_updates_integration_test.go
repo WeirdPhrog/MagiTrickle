@@ -3,12 +3,15 @@
 package magitrickle
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"magitrickle/constant"
 	"magitrickle/models"
@@ -16,6 +19,8 @@ import (
 	"magitrickle/utils/iptables"
 	"magitrickle/utils/netfilterTools"
 	"magitrickle/utils/recordsCache"
+
+	"golang.org/x/sys/unix"
 )
 
 type probeIPTables struct {
@@ -54,6 +59,22 @@ func TestRealRuleSetSyncUpdates(t *testing.T) {
 		}
 	}
 	run("ip", "link", "set", "lo", "up")
+	check(os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0600))
+	check(os.WriteFile("/proc/sys/net/ipv6/conf/all/forwarding", []byte("1"), 0600))
+	run("ip", "link", "add", "mtlan", "type", "veth", "peer", "name", "mtclient")
+	defer exec.Command("ip", "link", "del", "mtlan").Run()
+	for _, iface := range []string{"mtlan", "mtclient"} {
+		run("ip", "link", "set", iface, "up")
+	}
+	run("ip", "addr", "add", "192.168.230.1/24", "dev", "mtlan")
+	run("ip", "-6", "addr", "add", "fd00:230::1/64", "dev", "mtlan", "nodad")
+	lan, err := net.InterfaceByName("mtlan")
+	check(err)
+	client, err := net.InterfaceByName("mtclient")
+	check(err)
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, 0)
+	check(err)
+	defer unix.Close(fd)
 	for i, iface := range []string{"mtwan", "mtvpn", "mtother"} {
 		run("ip", "link", "add", iface, "type", "dummy")
 		defer exec.Command("ip", "link", "del", iface).Run()
@@ -74,14 +95,15 @@ func TestRealRuleSetSyncUpdates(t *testing.T) {
 			run(f.command, "-t", "mangle", "-A", "POSTROUTING", "-d", f.address, "-o", iface, "-j", "EGRESS_"+iface)
 		}
 	}
+	sequence := uint16(10000)
 	probe := func() {
 		for _, f := range families {
-			conn, err := net.DialUDP(f.network, nil, &net.UDPAddr{IP: net.ParseIP(f.address), Port: 53535})
-			if err == nil {
-				_, _ = conn.Write([]byte("routing probe"))
-				conn.Close()
-			}
+			sequence++
+			packet := forwardingProbe(client.HardwareAddr, lan.HardwareAddr, net.ParseIP(f.address), sequence)
+			check(unix.Sendto(fd, packet, 0, &unix.SockaddrLinklayer{Ifindex: client.Index}))
 		}
+		// Let ingress/forward processing complete before the next table update.
+		time.Sleep(time.Millisecond)
 	}
 	probing := false
 	wrap := func(e iptables.Executable) *iptables.IPTables {
@@ -100,9 +122,6 @@ func TestRealRuleSetSyncUpdates(t *testing.T) {
 	}
 	check(nh.InitRouting())
 	defer nh.CleanIPTables()
-	for _, f := range families {
-		run(f.command, "-t", "mangle", "-A", "OUTPUT", "-j", "UP_ROUTE")
-	}
 	a := &App{config: constant.DefaultAppConfig, nfHelper: nh, recordsCache: recordsCache.New()}
 	a.enabled.Store(true)
 	defer func() {
@@ -200,4 +219,64 @@ func TestRealRuleSetSyncUpdates(t *testing.T) {
 	}
 	run("ip", "link", "del", "mtother")
 	assertBlocked()
+	// Prove that the probe detects the working fallback route when routing is
+	// deliberately disabled; zero WAN counters above must not be a dead probe.
+	probing = false
+	check(disableRuleSets(a.userRuleSets))
+	check(disableRuleSets(a.subscriptionRuleSets))
+	probe()
+	for _, f := range families {
+		if count(f.command, "mtwan") == 0 {
+			t.Fatalf("%s: WAN control probe did not arrive", f.network)
+		}
+	}
+}
+
+func forwardingProbe(sourceMAC, destMAC net.HardwareAddr, dest net.IP, port uint16) []byte {
+	checksum := func(data []byte) uint16 {
+		var sum uint32
+		for len(data) >= 2 {
+			sum += uint32(binary.BigEndian.Uint16(data))
+			data = data[2:]
+		}
+		if len(data) != 0 {
+			sum += uint32(data[0]) << 8
+		}
+		for sum>>16 != 0 {
+			sum = sum&0xffff + sum>>16
+		}
+		return ^uint16(sum)
+	}
+	udp := make([]byte, 10)
+	binary.BigEndian.PutUint16(udp, port)
+	binary.BigEndian.PutUint16(udp[2:], 53535)
+	binary.BigEndian.PutUint16(udp[4:], uint16(len(udp)))
+	udp[8], udp[9] = 'm', 't'
+	ethernet := make([]byte, 14)
+	copy(ethernet, destMAC)
+	copy(ethernet[6:], sourceMAC)
+	var ip []byte
+	if dest.To4() != nil {
+		binary.BigEndian.PutUint16(ethernet[12:], unix.ETH_P_IP)
+		ip = make([]byte, 20)
+		ip[0], ip[8], ip[9] = 0x45, 64, 17
+		binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)+len(udp)))
+		copy(ip[12:], net.IP{192, 168, 230, 2})
+		copy(ip[16:], dest.To4())
+		binary.BigEndian.PutUint16(ip[10:], checksum(ip))
+	} else {
+		binary.BigEndian.PutUint16(ethernet[12:], unix.ETH_P_IPV6)
+		ip = make([]byte, 40)
+		ip[0], ip[6], ip[7] = 0x60, 17, 64
+		binary.BigEndian.PutUint16(ip[4:], uint16(len(udp)))
+		copy(ip[8:], net.ParseIP("fd00:230::2").To16())
+		copy(ip[24:], dest.To16())
+		pseudo := append(append([]byte(nil), ip[8:]...), 0, 0, 0, byte(len(udp)), 0, 0, 0, 17)
+		value := checksum(append(pseudo, udp...))
+		if value == 0 {
+			value = 0xffff
+		}
+		binary.BigEndian.PutUint16(udp[6:], value)
+	}
+	return append(append(ethernet, ip...), udp...)
 }

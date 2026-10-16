@@ -46,7 +46,7 @@ func TestServiceBindingAddressesAndIPv6Filtering(t *testing.T) {
 		t.Fatal("filter changed the original response")
 	}
 	mandatory, _ := dns.NewRR("www.example. 60 IN HTTPS 1 . mandatory=ipv6hint ipv6hint=2001:db8::10")
-	if got := withoutIPv6([]dns.RR{mandatory}); len(got) != 0 {
+	if got, _ := withoutIPv6([]dns.RR{mandatory}); len(got) != 0 {
 		t.Fatal("record retained after removing a mandatory parameter")
 	}
 	a.config.DNSProxy.DisableDropAAAA = true

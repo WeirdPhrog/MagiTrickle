@@ -142,20 +142,39 @@ func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.M
 		return nil, nil
 	}
 	// HTTPS/SVCB ipv6hint can otherwise bypass AAAA filtering entirely.
-	respMsg.Answer = withoutIPv6(respMsg.Answer)
-	respMsg.Ns = withoutIPv6(respMsg.Ns)
-	respMsg.Extra = withoutIPv6(respMsg.Extra)
+	var answersChanged, nsChanged, extraChanged bool
+	respMsg.Answer, answersChanged = withoutIPv6(respMsg.Answer)
+	respMsg.Ns, nsChanged = withoutIPv6(respMsg.Ns)
+	respMsg.Extra, extraChanged = withoutIPv6(respMsg.Extra)
+	if !answersChanged && !nsChanged && !extraChanged {
+		return nil, nil
+	}
 	respMsg.AuthenticatedData = false
 	return &respMsg, nil
 }
 
-func withoutIPv6(records []dns.RR) []dns.RR {
+func withoutIPv6(records []dns.RR) ([]dns.RR, bool) {
 	result := make([]dns.RR, 0, len(records))
+	changed := false
 	for _, rr := range records {
 		if rr == nil || rr.Header().Rrtype == dns.TypeAAAA {
+			changed = true
 			continue
 		}
-		var binding *dns.SVCB
+		binding := serviceBinding(rr)
+		hasIPv6 := false
+		if binding != nil {
+			for _, value := range binding.Value {
+				if value.Key() == dns.SVCB_IPV6HINT {
+					hasIPv6 = true
+				}
+			}
+		}
+		if !hasIPv6 {
+			result = append(result, rr)
+			continue
+		}
+		changed = true
 		switch v := rr.(type) {
 		case *dns.HTTPS:
 			rr = dns.Copy(v)
@@ -186,7 +205,7 @@ func withoutIPv6(records []dns.RR) []dns.RR {
 		}
 		result = append(result, rr)
 	}
-	return result
+	return result, changed
 }
 
 func serviceBinding(rr dns.RR) *dns.SVCB {
@@ -251,10 +270,11 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) er
 }
 
 func (a *App) processARecord(record dns.A, idStr, client, network string) error {
-	if len(record.A) != net.IPv4len {
+	ip := record.A.To4()
+	if ip == nil {
 		return fmt.Errorf("invalid A address for %s", record.Hdr.Name)
 	}
-	return a.processDNSAddress(record.Hdr, record.A, idStr, client, network)
+	return a.processDNSAddress(record.Hdr, ip, idStr, client, network)
 }
 
 func (a *App) processAAAARecord(record dns.AAAA, idStr, client, network string) error {
@@ -312,6 +332,9 @@ func (g *RuleSet) addDNSAddress(names []string, ip net.IP, ttl uint32) (bool, er
 	defer g.locker.Unlock()
 	if !g.Enabled() || !g.ConfiguredEnabled() {
 		return false, nil
+	}
+	if g.ipset == nil || g.ipsetToLink == nil {
+		return false, fmt.Errorf("routing is not ready")
 	}
 	for _, rule := range g.domainRules() {
 		for _, name := range names {
