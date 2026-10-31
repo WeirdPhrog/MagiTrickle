@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [2.3.2] — 2026-10-31
+
 ### Исправлено
 
 - TCP-запрос к DNS больше не обрывается, если сервер уже закрыл простаивающее соединение из пула: запрос один раз повторяется через новое соединение. Таймаут и ответ, не прошедший проверки, повтора не вызывают.
@@ -244,7 +246,8 @@
 
 Выпуски до 1.0.0 использовали номера `2026.x.x.x`; последний из них — `2026.10.16.20`. Их файлы и заметки доступны на странице [Releases](https://github.com/WeirdPhrog/WeirdTrickle/releases).
 
-[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.1...develop
+[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.2...develop
+[2.3.2]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.4...v2.3.0
 [2.2.4]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.3...v2.2.4
