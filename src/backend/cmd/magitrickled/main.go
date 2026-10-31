@@ -58,7 +58,7 @@ func main() {
 	// Настройка zerolog
 	consoleLogger := zerolog.ConsoleWriter{Out: os.Stdout}
 
-	log.Logger = log.Output(consoleLogger)
+	log.Logger = log.Output(zerolog.MultiLevelWriter(consoleLogger, newSyslogWriter(syslogPath)))
 	log.Info().
 		Str("version", constant.Version).
 		Msg("starting MagiTrickle daemon")
