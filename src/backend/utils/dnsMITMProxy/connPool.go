@@ -26,27 +26,35 @@ func newConnPool(network, addr string, maxIdle uint) *connPool {
 	}
 }
 
-func (p *connPool) Get(ctx context.Context) (net.Conn, error) {
+// Get returns an idle connection or dials a new one, and reports whether the
+// connection was reused: the other side may have closed a reused one meanwhile.
+func (p *connPool) Get(ctx context.Context) (net.Conn, bool, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, errors.New("pool is closed")
+		return nil, false, errors.New("pool is closed")
 	}
 	// Check context before trying to get/create connection
 	if ctx.Err() != nil {
 		p.mu.Unlock()
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 
 	select {
 	case conn := <-p.pool:
 		p.mu.Unlock()
-		return conn, nil
+		return conn, true, nil
 	default:
 		p.mu.Unlock()
-		var d net.Dialer
-		return d.DialContext(ctx, p.network, p.addr)
+		conn, err := p.Dial(ctx)
+		return conn, false, err
 	}
+}
+
+// Dial opens a new connection, bypassing the idle ones.
+func (p *connPool) Dial(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, p.network, p.addr)
 }
 
 func (p *connPool) Put(conn net.Conn) {

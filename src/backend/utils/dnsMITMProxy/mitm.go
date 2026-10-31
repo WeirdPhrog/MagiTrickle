@@ -79,19 +79,50 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 		pool = p.udpConnPool
 	}
 
-	upstreamConn, err := pool.Get(ctx)
+	upstreamConn, reused, err := pool.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
 	}
 
+	resp, err := p.exchange(ctx, upstreamConn, req, network)
+	if err != nil && reused && network == "tcp" && connectionClosed(err) {
+		// A server may close an idle connection at any moment, which shows only
+		// on reuse. DNS queries are safe to repeat, so try once on a new one.
+		_ = upstreamConn.Close()
+		upstreamConn, err = pool.Dial(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
+		}
+		resp, err = p.exchange(ctx, upstreamConn, req, network)
+	}
+	if err != nil {
+		_ = upstreamConn.Close()
+		return nil, err
+	}
+
+	// Return connection to pool
+	pool.Put(upstreamConn)
+
+	return resp, nil
+}
+
+// connectionClosed reports whether a query failed because the connection is
+// gone, not because it timed out or the server sent an unacceptable response.
+func connectionClosed(err error) bool {
+	var opErr *net.OpError
+	return errors.Is(err, io.EOF) || (errors.As(err, &opErr) && !opErr.Timeout())
+}
+
+// exchange sends one query and returns its response. The caller owns the
+// connection and closes it on an error.
+func (p *DNSMITMProxy) exchange(ctx context.Context, upstreamConn net.Conn, req []byte, network string) ([]byte, error) {
 	// Set deadline based on context or default timeout
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(p.timeout)
 	}
-	err = upstreamConn.SetDeadline(deadline)
+	err := upstreamConn.SetDeadline(deadline)
 	if err != nil {
-		_ = upstreamConn.Close()
 		return nil, fmt.Errorf("failed to set deadline: %w", err)
 	}
 
@@ -99,14 +130,12 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 		lenBuf := []byte{byte(len(req) >> 8), byte(len(req))}
 		_, err = upstreamConn.Write(lenBuf)
 		if err != nil {
-			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("failed to write length: %w", err)
 		}
 	}
 
 	_, err = upstreamConn.Write(req)
 	if err != nil {
-		_ = upstreamConn.Close()
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
@@ -116,23 +145,19 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 		lenBuf := make([]byte, 2)
 		_, err = io.ReadFull(upstreamConn, lenBuf)
 		if err != nil {
-			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("failed to read length: %w", err)
 		}
 		respLen := int(lenBuf[0])<<8 | int(lenBuf[1])
 		if respLen > maxTCPMsgSize {
-			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("response too large: %d", respLen)
 		}
 
 		resp = make([]byte, respLen)
 		_, err = io.ReadFull(upstreamConn, resp)
 		if err != nil {
-			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
 		if !matchesDNSResponse(req, resp) {
-			_ = upstreamConn.Close()
 			return nil, fmt.Errorf("unexpected DNS response header, transaction ID or question")
 		}
 	} else {
@@ -143,7 +168,6 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 		for {
 			n, err := upstreamConn.Read(buf)
 			if err != nil {
-				_ = upstreamConn.Close()
 				return nil, fmt.Errorf("failed to read response: %w", err)
 			}
 			// A reused UDP socket can still contain a duplicate reply to an
@@ -155,9 +179,6 @@ func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, netwo
 			break
 		}
 	}
-
-	// Return connection to pool
-	pool.Put(upstreamConn)
 
 	return resp, nil
 }

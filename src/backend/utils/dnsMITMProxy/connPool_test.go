@@ -19,7 +19,7 @@ func TestPoolConcurrentCloseGetPut(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				conn, err := p.Get(context.Background())
+				conn, _, err := p.Get(context.Background())
 				if err == nil {
 					if conn == nil {
 						t.Error("closed pool returned nil connection without error")
@@ -34,7 +34,7 @@ func TestPoolConcurrentCloseGetPut(t *testing.T) {
 		wg.Wait()
 		p.Close()
 		peer.Close()
-		if conn, err := p.Get(context.Background()); err == nil || conn != nil {
+		if conn, _, err := p.Get(context.Background()); err == nil || conn != nil {
 			t.Fatal("closed pool accepted Get")
 		}
 	}
