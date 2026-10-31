@@ -2,6 +2,7 @@ package recordsCache
 
 import (
 	"bytes"
+	"net"
 	"slices"
 	"testing"
 	"time"
@@ -135,6 +136,28 @@ func TestAddressDeadlineUpdate(t *testing.T) {
 	records = r.GetAddresses("example.com")
 	if records == nil {
 		t.Fatal("address should still be valid after TTL update")
+	}
+}
+
+// A rule set rebuilds its ipsets from this cache, and the two forms go to
+// different sets, so neither may replace the other.
+func TestIPv4AndMappedAddressesStaySeparate(t *testing.T) {
+	v4 := net.IPv4(192, 0, 2, 1).To4()
+	mapped := net.IPv4(192, 0, 2, 1).To16()
+	if !v4.Equal(mapped) {
+		t.Fatal("net.IP.Equal must treat both forms as one address for this test to mean anything")
+	}
+
+	r := New()
+	r.AddAddress("example.com", v4, 60)
+	r.AddAddress("example.com", mapped, 60)
+
+	records := r.GetAddresses("example.com")
+	if len(records) != 2 {
+		t.Fatalf("expected both forms, got %d", len(records))
+	}
+	if len(records[0].Address) != net.IPv4len || len(records[1].Address) != net.IPv6len {
+		t.Fatalf("address forms changed: %v, %v", records[0].Address, records[1].Address)
 	}
 }
 

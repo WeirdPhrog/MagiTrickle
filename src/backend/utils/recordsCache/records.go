@@ -87,6 +87,7 @@ func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
 	for _, aRecord := range addresses {
 		// Compare bytes, not net.IP.Equal: a 4-byte A address and a 16-byte
 		// IPv4-mapped AAAA address are routed through different ipsets.
+		//lint:ignore SA1021 the byte form is what selects the ipset
 		if bytes.Equal(aRecord.Address, addr) {
 			// Another client may still use an earlier answer with a longer TTL.
 			if deadline.After(aRecord.Deadline) {
