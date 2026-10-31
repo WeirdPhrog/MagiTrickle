@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-10-31
+
 ### Добавлено
 
 - Предупреждения и ошибки демона попадают в системный журнал роутера с тегом `weirdtrickle`. Раньше сервис отбрасывал весь вывод, и причины сбоев нигде не сохранялись. Строки Info туда не идут, в журнал уходит не больше 30 строк в минуту, а недоступный журнал не влияет на работу демона.
@@ -250,7 +252,8 @@
 
 Выпуски до 1.0.0 использовали номера `2026.x.x.x`; последний из них — `2026.10.16.20`. Их файлы и заметки доступны на странице [Releases](https://github.com/WeirdPhrog/WeirdTrickle/releases).
 
-[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.2...develop
+[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.4.0...develop
+[2.4.0]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.2...v2.4.0
 [2.3.2]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.1...v2.3.2
 [2.3.1]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.4...v2.3.0
