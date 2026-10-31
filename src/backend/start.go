@@ -82,6 +82,13 @@ func (a *App) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
 	defer func() { _ = a.nfHelper.CleanIPTables() }()
+	// Not fatal: new rule sets skip the names and indexes still taken, so a leftover is only clutter.
+	if err := a.nfHelper.CleanIPSets(); err != nil {
+		log.Warn().Err(err).Msg("failed to clear stale ipsets")
+	}
+	if err := a.nfHelper.CleanIPRules(); err != nil {
+		log.Warn().Err(err).Msg("failed to clear stale ip rules")
+	}
 	if err := a.nfHelper.InitRouting(); err != nil {
 		return err
 	}
