@@ -340,5 +340,13 @@ func writeConfigAtomically(filename string, data []byte) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), filename)
+	if err := os.Rename(f.Name(), filename); err != nil {
+		return err
+	}
+	// Best effort: not every filesystem lets a directory be synced.
+	if dir, err := os.Open(filepath.Dir(filename)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
+	return nil
 }
