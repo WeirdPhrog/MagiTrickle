@@ -50,6 +50,16 @@ func TestHasOwnBlackholeRoute(t *testing.T) {
 	}
 }
 
+func TestCleanIPSetsSurvivesAListingPanic(t *testing.T) {
+	original := listIPSets
+	defer func() { listIPSets = original }()
+	listIPSets = func() ([]netlink.IPSetResult, error) { panic("error is not a syscall.Errno") }
+
+	if err := (&Helper{IpsetPrefix: "mt_"}).CleanIPSets(); err == nil {
+		t.Fatal("the panic must come back as an error")
+	}
+}
+
 func TestNewRejectsShortPrefixes(t *testing.T) {
 	tests := []struct {
 		name         string

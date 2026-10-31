@@ -83,11 +83,23 @@ func hasOwnBlackholeRoute(routes []netlink.Route) bool {
 	return false
 }
 
+// listIPSets is replaced in tests.
+var listIPSets = netlink.IpsetListAll
+
 // CleanIPSets destroys the sets of a previous instance that did not get to
 // remove them. It must run after CleanIPTables: a referenced set cannot be
 // destroyed.
-func (nh *Helper) CleanIPSets() error {
-	sets, err := netlink.IpsetListAll()
+func (nh *Helper) CleanIPSets() (err error) {
+	// The listing parses every set in the system, foreign ones included, and
+	// netlink's ipset code panics on an error that is not a plain errno. This
+	// cleanup is optional, so that must not stop the daemon from starting.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic while listing ipsets: %v", r)
+		}
+	}()
+
+	sets, err := listIPSets()
 	if err != nil {
 		return fmt.Errorf("error while listing ipsets: %w", err)
 	}
