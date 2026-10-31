@@ -102,12 +102,26 @@ func TestRule_IsMatch_Wildcard(t *testing.T) {
 		{"test??.com", "test12.com", true},
 		{"test??.com", "test123.com", false},
 		{"test.com", "test12.com", false},
-		// Behaviour described in README: '.' is any character, and go-wildcard
-		// 2.1.0 lets '?' match nothing except near the end of the pattern.
-		{"*example.com", "exampleXcom", true},
+		{"*", "", true},
+		{"*", "anything.com", true},
+		{"a*b*c", "abc", true},
+		{"a*b*c", "aXbYbZc", true},
+		{"a*b*c", "aXbYcZ", false},
+		{"EX*LE.com", "example.COM", true},
+		// Behaviour described in README: '.' is a literal dot.
+		{"*.google.com", "evilgoogle.com", false},
+		{"*.google.com", "xgooglexcom", false},
+		{"*example.com", "exampleXcom", false},
+		{"*example.com", "anotherexample.com", true},
+		{"api.example.com", "apixexample-com", false},
+		// '?' is exactly one character.
 		{"te?t.com", "test.com", true},
-		{"te?t.com", "tet.com", true},
+		{"te?t.com", "tet.com", false},
+		{"te?t.com", "te.t.com", true},
 		{"example.co?m", "example.com", false},
+		{"api?.x.com", "api1.x.com", true},
+		{"api?.x.com", "api.x.com", false},
+		{"a?b", "ab", false},
 	}
 
 	for _, tt := range tests {

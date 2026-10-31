@@ -3,7 +3,6 @@ module magitrickle
 go 1.26.10
 
 require (
-	github.com/IGLOU-EU/go-wildcard/v2 v2.1.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/miekg/dns v1.1.68
 	github.com/rs/zerolog v1.34.0

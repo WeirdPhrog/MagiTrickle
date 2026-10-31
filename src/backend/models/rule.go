@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"magitrickle/utils/intID"
-
-	"github.com/IGLOU-EU/go-wildcard/v2"
 )
 
 const (
@@ -56,7 +54,35 @@ func (d *Rule) IsMatch(domainName string) bool {
 		return domainName[domainLen-ruleLen-1] == '.' && strings.EqualFold(domainName[domainLen-ruleLen:], d.Rule)
 
 	case RuleTypeWildcard:
-		return wildcard.Match(strings.ToLower(d.Rule), strings.ToLower(domainName))
+		return matchWildcard(strings.ToLower(d.Rule), strings.ToLower(domainName))
 	}
 	return false
+}
+
+// matchWildcard compares a whole name with a pattern: '*' is any sequence of
+// characters, including an empty one, '?' is exactly one character, and
+// everything else, including '.', is literal.
+func matchWildcard(pattern, name string) bool {
+	p, n := 0, 0
+	star, retry := -1, 0
+	for n < len(name) {
+		switch {
+		case p < len(pattern) && pattern[p] == '*':
+			star, retry = p, n
+			p++
+		case p < len(pattern) && (pattern[p] == '?' || pattern[p] == name[n]):
+			p++
+			n++
+		case star >= 0:
+			// Go back to the last '*' and give it one more character.
+			retry++
+			p, n = star+1, retry
+		default:
+			return false
+		}
+	}
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
 }
