@@ -53,6 +53,15 @@ func TestRealRuleSetSyncDNSBindings(t *testing.T) {
 	if response.Rcode != dns.RcodeSuccess {
 		t.Fatal("HTTPS response failed")
 	}
+	// AAAA filtering is on by default: the client gets no IPv6 hint, so it is not routed.
+	subnets, err := g.ListSubnets()
+	check(err)
+	if v4, v6 := countFamilies(subnets); v4 != 2 || v6 != 0 {
+		t.Fatalf("dropped IPv6 hint reached the kernel: %v", subnets)
+	}
+	a.config.DNSProxy.DisableDropAAAA = true
+	_, err = a.dnsResponseHook(nil, *query, *reply, "udp")
+	check(err)
 	assertSets := func() {
 		t.Helper()
 		subnets, err := g.ListSubnets()

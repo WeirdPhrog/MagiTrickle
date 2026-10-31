@@ -33,12 +33,16 @@ func TestServiceBindingAddressesAndIPv6Filtering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, owner := range []string{"www.example", "service.example", "alias.example"} {
-		addresses := a.recordsCache.GetAddresses(owner)
-		if len(addresses) != 4 {
-			t.Fatalf("%s: got %d addresses, want hints and both targets", owner, len(addresses))
+	assertAddresses := func(want int) {
+		t.Helper()
+		for _, owner := range []string{"www.example", "service.example", "alias.example"} {
+			if addresses := a.recordsCache.GetAddresses(owner); len(addresses) != want {
+				t.Fatalf("%s: got %d addresses, want %d", owner, len(addresses), want)
+			}
 		}
 	}
+	// The client gets no IPv6 hint or AAAA, so neither is routed.
+	assertAddresses(2)
 	if len(response.Extra) != 1 || len(response.Answer[0].(*dns.HTTPS).Value) != 1 {
 		t.Fatalf("IPv6 address/hint bypassed filtering: %s", response)
 	}
@@ -54,6 +58,7 @@ func TestServiceBindingAddressesAndIPv6Filtering(t *testing.T) {
 	if err != nil || response != nil {
 		t.Fatal("IPv6-enabled mode should preserve the original response")
 	}
+	assertAddresses(4)
 }
 
 func TestDNSAliasesLearnedBeforeAddresses(t *testing.T) {

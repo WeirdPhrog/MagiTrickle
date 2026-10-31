@@ -130,26 +130,28 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 }
 
 // dnsResponseHook installs routing before returning usable addresses to a client.
+// Only what the client receives is routed: a dropped address must not reach an
+// ipset, let alone fail the whole answer.
 func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.Msg, network string) (*dns.Msg, error) {
+	var filtered *dns.Msg
+	if !a.Config().DNSProxy.DisableDropAAAA {
+		// HTTPS/SVCB ipv6hint can otherwise bypass AAAA filtering entirely.
+		var answersChanged, nsChanged, extraChanged bool
+		respMsg.Answer, answersChanged = withoutIPv6(respMsg.Answer)
+		respMsg.Ns, nsChanged = withoutIPv6(respMsg.Ns)
+		respMsg.Extra, extraChanged = withoutIPv6(respMsg.Extra)
+		if answersChanged || nsChanged || extraChanged {
+			respMsg.AuthenticatedData = false
+			filtered = &respMsg
+		}
+	}
 	if err := a.handleMessage(respMsg, clientAddr, network); err != nil {
 		log.Error().Err(err).Msg("DNS routing failed; withholding addresses")
 		failure := new(dns.Msg)
 		failure.SetRcode(&reqMsg, dns.RcodeServerFailure)
 		return failure, nil
 	}
-	if a.Config().DNSProxy.DisableDropAAAA {
-		return nil, nil
-	}
-	// HTTPS/SVCB ipv6hint can otherwise bypass AAAA filtering entirely.
-	var answersChanged, nsChanged, extraChanged bool
-	respMsg.Answer, answersChanged = withoutIPv6(respMsg.Answer)
-	respMsg.Ns, nsChanged = withoutIPv6(respMsg.Ns)
-	respMsg.Extra, extraChanged = withoutIPv6(respMsg.Extra)
-	if !answersChanged && !nsChanged && !extraChanged {
-		return nil, nil
-	}
-	respMsg.AuthenticatedData = false
-	return &respMsg, nil
+	return filtered, nil
 }
 
 func withoutIPv6(records []dns.RR) ([]dns.RR, bool) {
