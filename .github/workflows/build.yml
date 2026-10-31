@@ -113,7 +113,9 @@ jobs:
         working-directory: src/frontend
         run: |
           npm ci
-          npm audit --audit-level=low
+          # Build tools do not reach the package, so their low-severity findings do not stop a release.
+          npm audit --omit=dev --audit-level=low
+          npm audit --audit-level=moderate
           npm run check
           npm run build
       - uses: denoland/setup-deno@v2
