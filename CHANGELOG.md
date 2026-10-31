@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-10-31
+
+### Исправлено
+
+- Паника в библиотеке netlink при разборе списка ipset больше не сможет остановить запуск демона. Появившаяся в 2.3.0 чистка необязательна, поэтому такая ошибка только попадает в журнал. На практике сбой не наблюдался: он найден при проверке кода.
+
+### Изменено
+
+- Добавлен тест на раздельное хранение IPv4-адреса и его IPv4-mapped формы в DNS-кэше. Они попадают в разные ipset, поэтому сравнение по байтам там намеренное.
+
 ## [2.3.0] — 2026-10-31
 
 Выпуск переносит исправления из новых коммитов MagiTrickle.
@@ -230,7 +240,8 @@
 
 Выпуски до 1.0.0 использовали номера `2026.x.x.x`; последний из них — `2026.10.16.20`. Их файлы и заметки доступны на странице [Releases](https://github.com/WeirdPhrog/WeirdTrickle/releases).
 
-[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.0...develop
+[Unreleased]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.1...develop
+[2.3.1]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.3.0...v2.3.1
 [2.3.0]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.4...v2.3.0
 [2.2.4]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/WeirdPhrog/WeirdTrickle/compare/v2.2.2...v2.2.3
